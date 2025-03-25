@@ -124,6 +124,8 @@ public:
 		float dV2 = r2 * sqrtr1;
 		float dV3 = 1 - dV1 - dV2;
 		Vec3 pos = vertices[0].p * dV1 + vertices[1].p * dV2 + vertices[2].p * dV3;
+
+		pdf = 1.0f / area;
 		return pos;
 	}
 	Vec3 gNormal()
@@ -281,131 +283,15 @@ struct IntersectionData
 #define TRIANGLE_COST 2.0f
 #define BUILD_BINS 32
 
-class BVHNode {
-public:
-	AABB bounds;
-	BVHNode* l = nullptr;
-	BVHNode* r = nullptr;
-	int startIndex = 0;
-	int endIndex = 0;
-
-	static AABB triangleBounds(const Triangle& tri) {
-		AABB box;
-		box.reset();
-		box.extend(tri.vertices[0].p);
-		box.extend(tri.vertices[1].p);
-		box.extend(tri.vertices[2].p);
-		return box;
-	}
-
-	void build(std::vector<Triangle>& inputTriangles, std::vector<Triangle>& outputTriangles) {
-		// 正确复制 input → output，一切都在 outputTriangles 上构建
-		outputTriangles = inputTriangles;
-		buildRecursive(outputTriangles, 0, static_cast<int>(outputTriangles.size()));
-	}
-
-	void buildRecursive(std::vector<Triangle>& triangles, int start, int end) {
-		startIndex = start;
-		endIndex = end;
-
-		bounds.reset();
-		for (int i = start; i < end; i++) {
-			bounds.extend(triangles[i]);
-		}
-
-		int numTriangles = end - start;
-		if (numTriangles <= MAXNODE_TRIANGLES) return;
-
-		Vec3 extent = bounds.max - bounds.min;
-		int axis = 0;
-		if (extent.y > extent.x && extent.y > extent.z) axis = 1;
-		else if (extent.z > extent.x && extent.z > extent.y) axis = 2;
-
-		std::nth_element(triangles.begin() + start, triangles.begin() + (start + end) / 2, triangles.begin() + end,
-			[axis](const Triangle& a, const Triangle& b) {
-				float ca = (axis == 0) ? a.centre().x : (axis == 1) ? a.centre().y : a.centre().z;
-				float cb = (axis == 0) ? b.centre().x : (axis == 1) ? b.centre().y : b.centre().z;
-				return ca < cb;
-			});
-
-		int mid = (start + end) / 2;
-		l = new BVHNode();
-		r = new BVHNode();
-		l->buildRecursive(triangles, start, mid);
-		r->buildRecursive(triangles, mid, end);
-	}
-
-	void traverse(const Ray& ray, const std::vector<Triangle>& triangles, IntersectionData& intersection) {
-		float tBox;
-		if (!bounds.rayAABB(ray, tBox)) return;
-
-		if (!l && !r) {
-			for (int i = startIndex; i < endIndex; i++) {
-				float t, u, v;
-				if (triangles[i].rayIntersect(ray, t, u, v) && t < intersection.t) {
-					intersection.t = t;
-					intersection.alpha = 1.0f - u - v;
-					intersection.beta = u;
-					intersection.gamma = v;
-					intersection.ID = i;
-				}
-			}
-			return;
-		}
-
-		if (l) l->traverse(ray, triangles, intersection);
-		if (r) r->traverse(ray, triangles, intersection);
-	}
-
-	IntersectionData traverse(const Ray& ray, const std::vector<Triangle>& triangles) {
-		IntersectionData intersection;
-		intersection.t = FLT_MAX;
-		intersection.ID = -1;
-		traverse(ray, triangles, intersection);
-		return intersection;
-	}
-
-	bool traverseVisible(const Ray& ray, const std::vector<Triangle>& triangles, float maxT) {
-		float tBox;
-		//if (!bounds.rayAABB(ray, tBox) || tBox > maxT) return true;
-		if (!bounds.rayAABB(ray, tBox)) return true;
-		if (!l && !r) {
-			for (int i = startIndex; i < endIndex; i++) {
-				float t, u, v;
-				if (triangles[i].rayIntersect(ray, t, u, v) && t < maxT) {
-					return false;
-				}
-			}
-			return true;
-		}
-
-		bool left = l ? l->traverseVisible(ray, triangles, maxT) : true;
-		bool right = r ? r->traverseVisible(ray, triangles, maxT) : true;
-		return left && right;
-	}
-};
-
-
-//class BVHNode
-//{
+//class BVHNode {
 //public:
 //	AABB bounds;
-//	BVHNode* l;
-//	BVHNode* r;
+//	BVHNode* l = nullptr;
+//	BVHNode* r = nullptr;
+//	int startIndex = 0;
+//	int endIndex = 0;
 //
-//	int startIndex;
-//	int endIndex;
-//
-//	BVHNode()
-//		: l(nullptr)
-//		, r(nullptr)
-//		, startIndex(0)
-//		, endIndex(0)
-//	{
-//	}
-//
-//	static AABB triangleBounds(const Triangle& tri)
-//	{
+//	static AABB triangleBounds(const Triangle& tri) {
 //		AABB box;
 //		box.reset();
 //		box.extend(tri.vertices[0].p);
@@ -414,103 +300,53 @@ public:
 //		return box;
 //	}
 //
-//	void buildRecursive(std::vector<Triangle>& triangles, int start, int end)
-//	{
+//	void build(std::vector<Triangle>& inputTriangles, std::vector<Triangle>& outputTriangles) {
+//		// 正确复制 input → output，一切都在 outputTriangles 上构建
+//		outputTriangles = inputTriangles;
+//		buildRecursive(outputTriangles, 0, static_cast<int>(outputTriangles.size()));
+//	}
+//
+//	void buildRecursive(std::vector<Triangle>& triangles, int start, int end) {
+//		startIndex = start;
+//		endIndex = end;
+//
 //		bounds.reset();
 //		for (int i = start; i < end; i++) {
-//			bounds.extend(triangles[i].vertices[0].p);
-//			bounds.extend(triangles[i].vertices[1].p);
-//			bounds.extend(triangles[i].vertices[2].p);
+//			bounds.extend(triangles[i]);
 //		}
 //
 //		int numTriangles = end - start;
-//		if (numTriangles <= MAXNODE_TRIANGLES)
-//		{
-//			this->startIndex = start;
-//			this->endIndex = end;
-//			return;
-//		}
+//		if (numTriangles <= MAXNODE_TRIANGLES) return;
 //
-//
-//		Vec3 size = bounds.max - bounds.min;
+//		Vec3 extent = bounds.max - bounds.min;
 //		int axis = 0;
-//		if (size.y > size.x && size.y > size.z)
-//			axis = 1;
-//		else if (size.z > size.x && size.z > size.y)
-//			axis = 2;
+//		if (extent.y > extent.x && extent.y > extent.z) axis = 1;
+//		else if (extent.z > extent.x && extent.z > extent.y) axis = 2;
 //
-//		std::sort(triangles.begin() + start, triangles.begin() + end,
+//		std::nth_element(triangles.begin() + start, triangles.begin() + (start + end) / 2, triangles.begin() + end,
 //			[axis](const Triangle& a, const Triangle& b) {
 //				float ca = (axis == 0) ? a.centre().x : (axis == 1) ? a.centre().y : a.centre().z;
 //				float cb = (axis == 0) ? b.centre().x : (axis == 1) ? b.centre().y : b.centre().z;
 //				return ca < cb;
 //			});
 //
-//		int n = numTriangles;
-//		std::vector<AABB> leftBounds(n);
-//		std::vector<AABB> rightBounds(n);
-//		leftBounds[0] = triangleBounds(triangles[start]);
-//		for (int i = 1; i < n; i++) {
-//			leftBounds[i] = leftBounds[i - 1];
-//			leftBounds[i].extend(triangles[start + i]);
-//		}
-//		rightBounds[n - 1] = triangleBounds(triangles[end - 1]);
-//		for (int i = n - 2; i >= 0; i--) {
-//			rightBounds[i] = rightBounds[i + 1];
-//			rightBounds[i].extend(triangles[start + i]);
-//		}
-//
-//		float totalArea = bounds.area();
-//		float bestCost = FLT_MAX;
-//		int bestSplit = -1;
-//
-//		for (int i = 1; i < n; i++) {
-//			float leftArea = leftBounds[i - 1].area();
-//			float rightArea = rightBounds[i].area();
-//			int leftCount = i;
-//			int rightCount = n - i;
-//			float cost = 1.0f + (leftArea * leftCount + rightArea * rightCount) / totalArea;
-//			if (cost < bestCost) {
-//				bestCost = cost;
-//				bestSplit = i;
-//			}
-//		}
-//
-//		if (bestCost >= static_cast<float>(numTriangles)) {
-//			this->startIndex = start;
-//			this->endIndex = end;
-//			return;
-//		}
-//
-//		int mid = start + bestSplit;
+//		int mid = (start + end) / 2;
 //		l = new BVHNode();
 //		r = new BVHNode();
 //		l->buildRecursive(triangles, start, mid);
 //		r->buildRecursive(triangles, mid, end);
 //	}
 //
-//	void build(std::vector<Triangle>& inputTriangles, std::vector<Triangle>& triangles)
-//	{
-//		triangles = inputTriangles;
-//		buildRecursive(triangles, 0, static_cast<int>(triangles.size()));
-//	}
-//
-//	void traverse(const Ray& ray, const std::vector<Triangle>& triangles, IntersectionData& intersection)
-//	{
+//	void traverse(const Ray& ray, const std::vector<Triangle>& triangles, IntersectionData& intersection) {
 //		float tBox;
-//		if (!bounds.rayAABB(ray, tBox)) {
-//			return;
-//		}
+//		if (!bounds.rayAABB(ray, tBox)) return;
 //
-//		if (!l && !r)
-//		{
-//			for (int i = startIndex; i < endIndex; i++)
-//			{
+//		if (!l && !r) {
+//			for (int i = startIndex; i < endIndex; i++) {
 //				float t, u, v;
-//				if (triangles[i].rayIntersect(ray, t, u, v) && t < intersection.t)
-//				{
+//				if (triangles[i].rayIntersect(ray, t, u, v) && t < intersection.t) {
 //					intersection.t = t;
-//					intersection.alpha = 1 - u - v;
+//					intersection.alpha = 1.0f - u - v;
 //					intersection.beta = u;
 //					intersection.gamma = v;
 //					intersection.ID = i;
@@ -523,36 +359,212 @@ public:
 //		if (r) r->traverse(ray, triangles, intersection);
 //	}
 //
-//	IntersectionData traverse(const Ray& ray, const std::vector<Triangle>& triangles)
-//	{
+//	IntersectionData traverse(const Ray& ray, const std::vector<Triangle>& triangles) {
 //		IntersectionData intersection;
 //		intersection.t = FLT_MAX;
+//		intersection.ID = -1;
 //		traverse(ray, triangles, intersection);
 //		return intersection;
 //	}
 //
-//	bool traverseVisible(const Ray& ray, const std::vector<Triangle>& triangles, float maxT)
-//	{
+//	bool traverseVisible(const Ray& ray, const std::vector<Triangle>& triangles, float maxT) {
 //		float tBox;
-//		if (!bounds.rayAABB(ray, tBox) || tBox > maxT) {
-//			return true;
-//		}
-//
-//		if (!l && !r)
-//		{
-//			for (int i = startIndex; i < endIndex; i++)
-//			{
+//		//if (!bounds.rayAABB(ray, tBox) || tBox > maxT) return true;
+//		if (!bounds.rayAABB(ray, tBox)) return true;
+//		if (!l && !r) {
+//			for (int i = startIndex; i < endIndex; i++) {
 //				float t, u, v;
-//				if (triangles[i].rayIntersect(ray, t, u, v) && t < maxT)
-//				{
+//				if (triangles[i].rayIntersect(ray, t, u, v) && t < maxT) {
 //					return false;
 //				}
 //			}
 //			return true;
 //		}
 //
-//		bool leftVis = l ? l->traverseVisible(ray, triangles, maxT) : true;
-//		bool rightVis = r ? r->traverseVisible(ray, triangles, maxT) : true;
-//		return leftVis && rightVis;
+//		bool left = l ? l->traverseVisible(ray, triangles, maxT) : true;
+//		bool right = r ? r->traverseVisible(ray, triangles, maxT) : true;
+//		return left && right;
 //	}
 //};
+
+
+class BVHNode
+{
+public:
+	AABB bounds;
+	BVHNode* r;
+	BVHNode* l;
+	unsigned int offset;  // 三角形列表中的起始索引
+	unsigned char num;    // 该节点包含的三角形数量
+	bool isLeaf;         // 是否是叶子节点
+
+	BVHNode()
+	{
+		r = NULL;
+		l = NULL;
+		offset = 0;
+		num = 0;
+		isLeaf = false;
+	}
+
+	~BVHNode()
+	{
+		if (r) delete r;
+		if (l) delete l;
+	}
+	// Note there are several options for how to implement the build method. Update this as required
+	void build(std::vector<Triangle>& inputTriangles, std::vector<Triangle>& triangles)
+	{
+		// 如果是叶子节点
+		if (inputTriangles.size() <= MAXNODE_TRIANGLES) {
+			isLeaf = true;
+			offset = (unsigned int)triangles.size();  // 设置三角形的起始索引
+			num = (unsigned char)inputTriangles.size();
+
+			// 将三角形添加到全局三角形列表中
+			triangles.insert(triangles.end(), inputTriangles.begin(), inputTriangles.end());
+
+			// 计算包围盒
+			bounds.reset();
+			for (const auto& triangle : inputTriangles) {
+				bounds.extend(triangle.vertices[0].p);
+				bounds.extend(triangle.vertices[1].p);
+				bounds.extend(triangle.vertices[2].p);
+			}
+			return;
+		}
+
+		// 计算整个节点的包围盒
+		bounds.reset();
+		for (const auto& triangle : inputTriangles) {
+			bounds.extend(triangle.vertices[0].p);
+			bounds.extend(triangle.vertices[1].p);
+			bounds.extend(triangle.vertices[2].p);
+		}
+
+		// 计算所有三角形的中心点
+		std::vector<Vec3> centers;
+		centers.reserve(inputTriangles.size());
+		for (const auto& triangle : inputTriangles) {
+			centers.push_back(triangle.centre());
+		}
+
+		// 选择最佳分割轴
+		Vec3 extent = bounds.max - bounds.min;
+		int axis = 0;
+		if (extent.y > extent.x && extent.y > extent.z) axis = 1;
+		else if (extent.z > extent.x && extent.z > extent.y) axis = 2;
+
+		// 计算分割点（使用中位数）
+		float split = 0.0f;
+		std::vector<float> centerValues(centers.size());
+		for (size_t i = 0; i < centers.size(); i++) {
+			centerValues[i] = (axis == 0) ? centers[i].x : ((axis == 1) ? centers[i].y : centers[i].z);
+		}
+		size_t mid = centerValues.size() / 2;
+		std::nth_element(centerValues.begin(), centerValues.begin() + mid, centerValues.end());
+		split = centerValues[mid];
+
+		// 分割三角形
+		std::vector<Triangle> leftTriangles, rightTriangles;
+		for (size_t i = 0; i < inputTriangles.size(); i++) {
+			float centerValue = (axis == 0) ? centers[i].x : ((axis == 1) ? centers[i].y : centers[i].z);
+			if (centerValue <= split) {
+				leftTriangles.push_back(inputTriangles[i]);
+			}
+			else {
+				rightTriangles.push_back(inputTriangles[i]);
+			}
+		}
+
+		// 处理特殊情况：如果一边为空，则平均分配
+		if (leftTriangles.empty() || rightTriangles.empty()) {
+			size_t mid = inputTriangles.size() / 2;
+			leftTriangles.assign(inputTriangles.begin(), inputTriangles.begin() + mid);
+			rightTriangles.assign(inputTriangles.begin() + mid, inputTriangles.end());
+		}
+
+		// 递归构建左右子树
+		l = new BVHNode();
+		r = new BVHNode();
+		l->build(leftTriangles, triangles);
+		r->build(rightTriangles, triangles);
+	}
+	void traverse(const Ray& ray, const std::vector<Triangle>& triangles, IntersectionData& intersection)
+	{
+		// 首先检查射线是否与当前节点的包围盒相交
+		float boxT;
+		if (!bounds.rayAABB(ray, boxT) || boxT > intersection.t) {
+			return;
+		}
+
+		// 如果是叶子节点，测试与所有三角形的相交
+		if (isLeaf) {
+			for (unsigned int i = 0; i < num; i++) {
+				float t, u, v;
+				if (triangles[offset + i].rayIntersect(ray, t, u, v)) {
+					if (t > 0 && t < intersection.t) {  // 确保t为正且是最近的交点
+						intersection.t = t;
+						intersection.ID = offset + i;
+						intersection.alpha = u;
+						intersection.beta = v;
+						intersection.gamma = 1.0f - (u + v);
+					}
+				}
+			}
+			return;
+		}
+
+		// 递归遍历子节点，先遍历更近的子节点
+		float tLeft = FLT_MAX, tRight = FLT_MAX;
+		bool hitLeft = l ? l->bounds.rayAABB(ray, tLeft) : false;
+		bool hitRight = r ? r->bounds.rayAABB(ray, tRight) : false;
+
+		if (tLeft < tRight) {
+			if (hitLeft) l->traverse(ray, triangles, intersection);
+			if (hitRight && tRight < intersection.t) r->traverse(ray, triangles, intersection);
+		}
+		else {
+			if (hitRight) r->traverse(ray, triangles, intersection);
+			if (hitLeft && tLeft < intersection.t) l->traverse(ray, triangles, intersection);
+		}
+	}
+	IntersectionData traverse(const Ray& ray, const std::vector<Triangle>& triangles)
+	{
+		IntersectionData intersection;
+		intersection.t = FLT_MAX;
+		traverse(ray, triangles, intersection);
+		return intersection;
+	}
+	bool traverseVisible(const Ray& ray, const std::vector<Triangle>& triangles, const float maxT)
+	{
+		// 首先检查射线是否与当前节点的包围盒相交
+		float t;
+		if (!bounds.rayAABB(ray, t))
+		{
+			return true;
+		}
+
+		// 如果是叶子节点,测试与所有三角形的相交
+		if (isLeaf)
+		{
+			for (unsigned int i = 0; i < num; i++)
+			{
+				float t, u, v;
+				if (triangles[offset + i].rayIntersect(ray, t, u, v))
+				{
+					if (t < maxT)
+					{
+						return false;
+					}
+				}
+			}
+			return true;
+		}
+
+		// 如果是内部节点,递归遍历左右子树
+		if (l && !l->traverseVisible(ray, triangles, maxT)) return false;
+		if (r && !r->traverseVisible(ray, triangles, maxT)) return false;
+		return true;
+	}
+};

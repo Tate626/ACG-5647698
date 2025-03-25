@@ -37,7 +37,7 @@ public:
 	{
 		film->clear();
 	}
-	Colour computeDirect1(ShadingData shadingData, Sampler* sampler)
+	Colour computeDirect(ShadingData shadingData, Sampler* sampler)
 	{
 		if (shadingData.bsdf->isPureSpecular() == true)
 		{
@@ -84,151 +84,6 @@ public:
 		}
 		return Colour(0.0f, 0.0f, 0.0f);
 	}
-
-	Colour computeDirect11(ShadingData shadingData, Sampler* sampler)
-	{
-		if (shadingData.bsdf->isPureSpecular()) return Colour(0.0f, 0.0f, 0.0f);
-
-		// Sample a light
-		float pmf;
-		Light* light = scene->sampleLight(sampler, pmf);
-		if (!light || pmf < 1e-6f) return Colour(0.0f, 0.0f, 0.0f);
-
-		// Sample a point/direction on the light
-		float pdf;
-		Colour emitted;
-		Vec3 sample = light->sample(shadingData, sampler, emitted, pdf);
-
-		if (pdf < 1e-6f || !std::isfinite(pdf)) return Colour(0.0f, 0.0f, 0.0f);
-
-		Vec3 wi;
-		float G = 1.0f;
-
-		if (light->isArea())
-		{
-			Vec3 p = sample;
-			wi = p - shadingData.x;
-			float dist2 = wi.lengthSq();
-			wi = wi.normalize();
-
-			float cosSurface = max(Dot(shadingData.sNormal, wi), 0.0f);
-			float cosLight = max(-Dot(wi, light->normal(shadingData, wi)), 1e-4f); // avoid div0
-
-			if (cosSurface <= 0.0f || cosLight <= 0.0f) return Colour(0.0f, 0.0f, 0.0f);
-			if (!scene->visible(shadingData.x, p)) return Colour(0.0f, 0.0f, 0.0f);
-
-			G = (cosSurface * cosLight) / dist2;
-
-			// Convert area pdf to solid angle domain
-			pdf = (pdf * dist2) / cosLight;
-
-			if (pdf < 1e-6f || !std::isfinite(pdf)) return Colour(0.0f, 0.0f, 0.0f);
-		}
-		else
-		{
-			// Environment / infinite light
-			wi = sample;
-			float cosSurface = max(Dot(shadingData.sNormal, wi), 0.0f);
-			G = cosSurface;
-
-			if (cosSurface <= 0.0f) return Colour(0.0f, 0.0f, 0.0f);
-			if (!scene->visible(shadingData.x, shadingData.x + wi * 1e4f)) return Colour(0.0f, 0.0f, 0.0f);
-		}
-
-		Colour bsdfVal = shadingData.bsdf->evaluate(shadingData, wi);
-
-		if (!std::isfinite(bsdfVal.r) || !std::isfinite(emitted.r)) return Colour(0.0f, 0.0f, 0.0f);
-
-		Colour result = bsdfVal * emitted * G / (pdf * pmf);
-
-		// 额外保险：强制 clamp 太亮的异常值（可选）
-		result.r = min(result.r, 50.0f);
-		result.g = min(result.g, 50.0f);
-		result.b = min(result.b, 50.0f);
-
-		return result;
-	}
-
-	Colour computeDirect(ShadingData shadingData, Sampler* sampler)
-	{
-		if (shadingData.bsdf->isPureSpecular())
-			return Colour(0.0f, 0.0f, 0.0f);
-
-		// 1. Sample a light
-		float pmf;
-		Light* light = scene->sampleLight(sampler, pmf);
-		if (!light || pmf < 1e-6f)
-			return Colour(0.0f, 0.0f, 0.0f);
-
-		// 2. Sample a point or direction on the light
-		float pdf;
-		Colour emitted;
-		Vec3 sample = light->sample(shadingData, sampler, emitted, pdf);
-
-		if (pdf < 1e-6f || !std::isfinite(pdf))
-			return Colour(0.0f, 0.0f, 0.0f);
-
-		Vec3 wi;
-		float G = 1.0f;
-
-		if (light->isArea())
-		{
-			Vec3 p = sample;
-			wi = p - shadingData.x;
-			float dist2 = wi.lengthSq();
-			float dist = sqrtf(dist2);
-			wi = wi.normalize();
-
-			float cosSurface = max(Dot(shadingData.sNormal, wi), 0.0f);
-			float cosLight = max(-Dot(wi, light->normal(shadingData, wi)), 1e-2f); // ⚠️ 更高的下限，抗白边
-
-			if (cosSurface <= 0.0f || cosLight <= 0.0f)
-				return Colour(0.0f, 0.0f, 0.0f);
-
-			G = (cosSurface * cosLight) / dist2;
-
-			// Convert area PDF to solid angle domain
-			pdf = (pdf * dist2) / cosLight;
-			if (pdf < 1e-6f || !std::isfinite(pdf))
-				return Colour(0.0f, 0.0f, 0.0f);
-
-			// ✅ 加 offset，防止自交导致 shadow ray 撞到自己
-			Vec3 shadowOrigin = shadingData.x + wi * 1e-4f;
-			if (!scene->visible(shadowOrigin, p))
-				return Colour(0.0f, 0.0f, 0.0f);
-		}
-		else
-		{
-			// Environment light
-			wi = sample;
-			float cosSurface = max(Dot(shadingData.sNormal, wi), 0.0f);
-			G = cosSurface;
-
-			if (cosSurface <= 0.0f)
-				return Colour(0.0f, 0.0f, 0.0f);
-
-			Vec3 shadowOrigin = shadingData.x + wi * 1e-4f;
-			if (!scene->visible(shadowOrigin, shadowOrigin + wi * 1e4f))
-				return Colour(0.0f, 0.0f, 0.0f);
-		}
-
-		// 3. BSDF eval
-		Colour bsdfVal = shadingData.bsdf->evaluate(shadingData, wi);
-		if (!std::isfinite(bsdfVal.r) || !std::isfinite(emitted.r))
-			return Colour(0.0f, 0.0f, 0.0f);
-
-		// 4. Final result
-		Colour result = bsdfVal * emitted * G / (pdf * pmf);
-
-		// ✅ Soft clamp to avoid overbright edges
-		float maxIntensity = 20.0f;
-		result.r = min(result.r, maxIntensity);
-		result.g = min(result.g, maxIntensity);
-		result.b = min(result.b, maxIntensity);
-
-		return result;
-	}
-
 	Colour pathTrace(Ray& r, Colour& pathThroughput, int depth, Sampler* sampler, bool canHitLight = true)
 	{
 		IntersectionData intersection = scene->traverse(r);
@@ -247,7 +102,7 @@ public:
 				}
 			}
 			Colour direct = pathThroughput * computeDirect(shadingData, sampler);
-			if (depth > 3)
+			if (depth > 2)
 			{
 				return direct;
 			}
