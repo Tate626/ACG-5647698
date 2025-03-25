@@ -37,8 +37,12 @@ public:
 	{
 		film->clear();
 	}
+	//计算传入的空间中一点在随机一入射方向上的渲染结果，但是只计算能射到光源的入射方向，
+	//也就是说只计算已有光源，且能直接照射到此点的一条光线
+	//不包括反射效果，只计算了一个方向，取样时也是直接取已有光源，Next Event Estimation(nee)
 	Colour computeDirect(ShadingData shadingData, Sampler* sampler)
 	{
+		//直接跳过镜面类型
 		if (shadingData.bsdf->isPureSpecular() == true)
 		{
 			return Colour(0.0f, 0.0f, 0.0f);
@@ -46,28 +50,32 @@ public:
 		// Sample a light
 		float pmf;
 		Light* light = scene->sampleLight(sampler, pmf);
-		// Sample a point on the light
+		// Sample a point on the light，返回光源上一点方向
 		float pdf;
 		Colour emitted;
 		Vec3 p = light->sample(shadingData, sampler, emitted, pdf);
+		//判断类型
 		if (light->isArea())
 		{
 			// Calculate GTerm
+			//wi就是入射方向
 			Vec3 wi = p - shadingData.x;
 			float l = wi.lengthSq();
 			wi = wi.normalize();
+			//计算几何项gterm，用于后续光照计算
 			float GTerm = (max(Dot(wi, shadingData.sNormal), 0.0f) * max(-Dot(wi, light->normal(shadingData, wi)), 0.0f)) / l;
 			if (GTerm > 0)
 			{
-				// Trace
+				// Trace，可见性判断，是否被阻挡
 				if (scene->visible(shadingData.x, p))
 				{
-					// Shade
+					// Shade，计算这一方向的渲染效果
 					return shadingData.bsdf->evaluate(shadingData, wi) * emitted * GTerm / (pmf * pdf);
 				}
 			}
 		}
 		else
+	    //说明此光照是方向光，等没有固定源头,需要进行近似计算处理
 		{
 			// Calculate GTerm
 			Vec3 wi = p;
@@ -84,16 +92,22 @@ public:
 		}
 		return Colour(0.0f, 0.0f, 0.0f);
 	}
+	//canhitlight用于判断能否命中光源
+	//这个是直接光加上间接光
 	Colour pathTrace(Ray& r, Colour& pathThroughput, int depth, Sampler* sampler, bool canHitLight = true)
 	{
+		//摄像机发出的光线r遍历场景，得到相交点
 		IntersectionData intersection = scene->traverse(r);
 		ShadingData shadingData = scene->calculateShadingData(intersection, r);
+		//如果确实命中
 		if (shadingData.t < FLT_MAX)
 		{
+			//如果是光源
 			if (shadingData.bsdf->isLight())
 			{
 				if (canHitLight == true)
 				{
+					//返回光的颜色，这里的path这个值代表光的反射衰减率，保留原有效果的多少
 					return pathThroughput * shadingData.bsdf->emit(shadingData, shadingData.wo);
 				}
 				else
@@ -101,14 +115,18 @@ public:
 					return Colour(0.0f, 0.0f, 0.0f);
 				}
 			}
+			//不是光，说明是物体，返回一个方向的颜色，一样乘衰减率
 			Colour direct = pathThroughput * computeDirect(shadingData, sampler);
-			if (depth > 2)
+			//判断光的弹射次数，达标就返回
+			if (depth > 5)
 			{
 				return direct;
 			}
+			//若是光的能量过低，也停止计算，返回
 			float russianRouletteProbability = min(pathThroughput.Lum(), 0.9f);
 			if (sampler->next() < russianRouletteProbability)
 			{
+				//并且更新衰减率
 				pathThroughput = pathThroughput / russianRouletteProbability;
 			}
 			else
@@ -121,24 +139,34 @@ public:
 			pdf = SamplingDistributions::cosineHemispherePDF(wi);
 			wi = shadingData.frame.toWorld(wi);
 			bsdf = shadingData.bsdf->evaluate(shadingData, wi);
+			//这里递归调用了这个方法，以这个交点当相机再次射线，模拟一次光线反射
 			pathThroughput = pathThroughput * bsdf * fabsf(Dot(wi, shadingData.sNormal)) / pdf;
 			r.init(shadingData.x + (wi * EPSILON), wi);
 			return (direct + pathTrace(r, pathThroughput, depth + 1, sampler, shadingData.bsdf->isPureSpecular()));
 		}
+		//没打到，返回背景材质
 		return scene->background->evaluate(shadingData, r.dir);
 	}
+	//从相机发出的一条射线返回一个颜色
+	//这个方法使用后就没有间接光了
 	Colour direct(Ray& r, Sampler* sampler)
 	{
+		//摄像机发出的光线r遍历场景，得到相交点
 		IntersectionData intersection = scene->traverse(r);
 		ShadingData shadingData = scene->calculateShadingData(intersection, r);
+		//判断确实打到物体
 		if (shadingData.t < FLT_MAX)
 		{
+			//判断打到的物体是否是光源
 			if (shadingData.bsdf->isLight())
 			{
+				//是光源就返回光的颜色
 				return shadingData.bsdf->emit(shadingData, shadingData.wo);
 			}
+			//不是光则计算一次compute，得到此点朝向某方向的颜色
 			return computeDirect(shadingData, sampler);
 		}
+		//未打到物体则返回黑色
 		return Colour(0.0f, 0.0f, 0.0f);
 	}
 	
@@ -225,6 +253,7 @@ public:
 			            //Colour col = albedo(ray);
 
 						Colour pathThroughput(1.0f, 1.0f, 1.0f);
+						//Colour col = direct(ray, &samplers[threadId]);
 						Colour col = pathTrace(ray, pathThroughput, 0, &samplers[threadId]);
 
 						film->splat(px, py, col);

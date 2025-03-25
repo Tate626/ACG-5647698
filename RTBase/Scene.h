@@ -133,6 +133,7 @@ public:
 	{
 		return bvh->traverse(ray, triangles);
 	}
+	//对场景中的所有光源进行随机均匀采样，返回一个光源，pmf是概率
 	Light* sampleLight(Sampler* sampler, float& pmf)
 	{
 		float r1 = sampler->next();
@@ -159,6 +160,7 @@ public:
 			lights.push_back(background);
 		}
 	}
+	//判断p1发出的射线能否击中p2，是否会被阻挡
 	bool visible(const Vec3& p1, const Vec3& p2)
 	{
 		Ray ray;

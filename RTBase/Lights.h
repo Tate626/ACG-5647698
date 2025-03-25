@@ -14,10 +14,13 @@ public:
 	float sceneRadius;
 };
 
+//抽象成两种，区域光源和方向光，在光照计算中只分成两类，是否能得到光上一点
 class Light
 {
 public:
+	//从光源区域中随机取样一点
 	virtual Vec3 sample(const ShadingData& shadingData, Sampler* sampler, Colour& emittedColour, float& pdf) = 0;
+	//判断传入入射角度下，能否看到光源的正面，是否要返回光的颜色
 	virtual Colour evaluate(const ShadingData& shadingData, const Vec3& wi) = 0;
 	virtual float PDF(const ShadingData& shadingData, const Vec3& wi) = 0;
 	virtual bool isArea() = 0;
