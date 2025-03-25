@@ -37,7 +37,7 @@ public:
 	{
 		film->clear();
 	}
-	Colour computeDirect(ShadingData shadingData, Sampler* sampler)
+	Colour computeDirect1(ShadingData shadingData, Sampler* sampler)
 	{
 		if (shadingData.bsdf->isPureSpecular() == true)
 		{
@@ -86,71 +86,6 @@ public:
 	}
 
 	Colour computeDirect11(ShadingData shadingData, Sampler* sampler)
-	{
-		if (shadingData.bsdf->isPureSpecular()) {
-			return Colour(0.0f, 0.0f, 0.0f);
-		}
-
-		// Sample a light
-		float pmf;
-		Light* light = scene->sampleLight(sampler, pmf); // 1 / N for uniform
-		if (!light) return Colour(0.0f, 0.0f, 0.0f);
-
-		// Sample a point or direction on the light
-		float pdf; // light pdf
-		Colour emitted;
-		Vec3 sample = light->sample(shadingData, sampler, emitted, pdf);
-
-		if (pdf < 1e-6f || pmf < 1e-6f || !std::isfinite(pdf * pmf)) {
-			return Colour(0.0f, 0.0f, 0.0f);
-		}
-
-		Vec3 wi; // incoming light direction
-		float G = 1.0f; // geometry term
-
-		if (light->isArea()) {
-			// Sample is a point on the light
-			Vec3 p = sample;
-			wi = p - shadingData.x;
-			float dist2 = wi.lengthSq();
-			wi = wi.normalize();
-
-			float cosTheta_surface = max(Dot(shadingData.sNormal, wi), 0.0f);
-			float cosTheta_light = max(-Dot(wi, light->normal(shadingData, wi)), 1e-4f);
-			G = (cosTheta_surface * cosTheta_light) / dist2;
-
-			// Convert area pdf to solid angle pdf
-			pdf = (pdf * dist2) / cosTheta_light;
-
-			// Check visibility
-			if (!scene->visible(shadingData.x, p)) {
-				return Colour(0.0f, 0.0f, 0.0f);
-			}
-		}
-		else {
-			// Sample is a direction from environment light
-			wi = sample;
-
-			G = max(Dot(shadingData.sNormal, wi), 0.0f);
-
-			// Check visibility to far away
-			if (!scene->visible(shadingData.x, shadingData.x + wi * 1e4f)) {
-				return Colour(0.0f, 0.0f, 0.0f);
-			}
-		}
-
-		if (pdf < 1e-6f || !std::isfinite(pdf)) {
-			return Colour(0.0f, 0.0f, 0.0f);
-		}
-
-		// Final contribution
-		Colour bsdfVal = shadingData.bsdf->evaluate(shadingData, wi);
-		Colour Li = emitted;
-
-		return bsdfVal * Li * G / (pdf * pmf);
-	}
-
-	Colour computeDirect111(ShadingData shadingData, Sampler* sampler)
 	{
 		if (shadingData.bsdf->isPureSpecular()) return Colour(0.0f, 0.0f, 0.0f);
 
@@ -214,7 +149,7 @@ public:
 		return result;
 	}
 
-	Colour computeDirect1111(ShadingData shadingData, Sampler* sampler)
+	Colour computeDirect(ShadingData shadingData, Sampler* sampler)
 	{
 		if (shadingData.bsdf->isPureSpecular())
 			return Colour(0.0f, 0.0f, 0.0f);
@@ -377,31 +312,101 @@ public:
 		return Colour(0.0f, 0.0f, 0.0f);
 	}
 
-	//单线程版
+	 //单线程版
+	//void render()
+	//{
+	//	film->incrementSPP();
+	//	for (unsigned int y = 0; y < film->height; y++)
+	//	{
+	//		for (unsigned int x = 0; x < film->width; x++)
+	//		{//这里就是光线追踪（遍历每一个像素点，生成光线，返回一个颜色绘制）
+	//		    //这里取每个像素点的中心来生成光线
+	//			float px = x + 0.5f;
+	//			float py = y + 0.5f;
+	//			Ray ray = scene->camera.generateRay(px, py);
+	//			//Colour col = viewNormals(ray);
+	//			//Colour col = albedo(ray);
+	//			Colour temp(1.f, 1.f, 1.f);
+	//			Colour col = pathTrace(ray, temp, 0, samplers);
+	//			film->splat(px, py, col);
+	//			//把法线的颜色变成255版本
+	//			unsigned char r = (unsigned char)(col.r * 255);
+	//			unsigned char g = (unsigned char)(col.g * 255);
+	//			unsigned char b = (unsigned char)(col.b * 255);
+	//			film->tonemap(x, y, r, g, b);
+	//			canvas->draw(x, y, r, g, b);
+	//		}
+	//	}
+	//}
+
+		//多线程
 	void render()
 	{
+		static const int TILE_SIZE = 32;
 		film->incrementSPP();
-		for (unsigned int y = 0; y < film->height; y++)
+		std::vector<std::thread> workers;
+		int numThreads = numProcs;
+		int numTilesX = (film->width + TILE_SIZE - 1) / TILE_SIZE;
+		int numTilesY = (film->height + TILE_SIZE - 1) / TILE_SIZE;
+
+
+		auto renderTile = [&](int tileX, int tileY, int threadId)
+			{
+				int startX = tileX * TILE_SIZE;
+				int startY = tileY * TILE_SIZE;
+				int endX = min(startX + TILE_SIZE, (int)film->width);
+				int endY = min(startY + TILE_SIZE, (int)film->height);
+
+				for (int y = startY; y < endY; y++)
+				{
+					for (int x = startX; x < endX; x++)
+					{
+						float px = x + 0.5f;
+						float py = y + 0.5f;
+
+						Ray ray = scene->camera.generateRay(px, py);
+
+						//Colour col = viewNormals(ray);
+			            //Colour col = albedo(ray);
+
+						Colour pathThroughput(1.0f, 1.0f, 1.0f);
+						Colour col = pathTrace(ray, pathThroughput, 0, &samplers[threadId]);
+
+						film->splat(px, py, col);
+
+						unsigned char r = (unsigned char)(col.r * 255);
+						unsigned char g = (unsigned char)(col.g * 255);
+						unsigned char b = (unsigned char)(col.b * 255);
+						film->tonemap(x, y, r, g, b);
+						canvas->draw(x, y, r, g, b);
+					}
+				}
+			};
+
+		auto workerFunc = [&](int threadId)
+			{
+				for (int tileY = 0; tileY < numTilesY; tileY++)
+				{
+					for (int tileX = 0; tileX < numTilesX; tileX++)
+					{
+						if (((tileY * numTilesX) + tileX) % numThreads == threadId)
+						{
+							renderTile(tileX, tileY, threadId);
+						}
+					}
+				}
+			};
+
+		for (int i = 0; i < numThreads; i++)
 		{
-			for (unsigned int x = 0; x < film->width; x++)
-			{//这里就是光线追踪（遍历每一个像素点，生成光线，返回一个颜色绘制）
-			    //这里取每个像素点的中心来生成光线
-				float px = x + 0.5f;
-				float py = y + 0.5f;
-				Ray ray = scene->camera.generateRay(px, py);
-				//Colour col = viewNormals(ray);
-				//Colour col = albedo(ray);
-				Colour temp(1.f, 1.f, 1.f);
-				Colour col = pathTrace(ray, temp, 0, samplers);
-				film->splat(px, py, col);
-				//把法线的颜色变成255版本
-				unsigned char r = (unsigned char)(col.r * 255);
-				unsigned char g = (unsigned char)(col.g * 255);
-				unsigned char b = (unsigned char)(col.b * 255);
-				film->tonemap(x, y, r, g, b);
-				canvas->draw(x, y, r, g, b);
-			}
+			workers.emplace_back(workerFunc, i);
 		}
+
+		for (auto& worker : workers)
+		{
+			worker.join();
+		}
+
 	}
 
 	int getSPP()

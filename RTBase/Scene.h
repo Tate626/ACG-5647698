@@ -82,7 +82,15 @@ public:
 	void build()
 	{
 		// Add BVH building code here
-		
+		std::vector<Triangle> inputTriangles;
+		for (int i = 0; i < triangles.size(); i++)
+		{
+			inputTriangles.push_back(triangles[i]);
+		}
+		triangles.clear();
+		bvh = new BVHNode();
+		bvh->build(inputTriangles, triangles);
+
 		// Do not touch the code below this line!
 		// Build light list
 		for (int i = 0; i < triangles.size(); i++)
@@ -96,7 +104,8 @@ public:
 			}
 		}
 	}
-	IntersectionData traverse(const Ray& ray)
+	//旧版，没有bvh
+	IntersectionData traverse_old(const Ray& ray)
 	{
 		IntersectionData intersection;
 		intersection.t = FLT_MAX;
@@ -118,6 +127,11 @@ public:
 			}
 		}
 		return intersection;
+	}
+	//新版
+	IntersectionData traverse(const Ray& ray)
+	{
+		return bvh->traverse(ray, triangles);
 	}
 	Light* sampleLight(Sampler* sampler, float& pmf)
 	{
@@ -152,8 +166,9 @@ public:
 		float maxT = dir.length() - (2.0f * EPSILON);
 		dir = dir.normalize();
 		ray.init(p1 + (dir * EPSILON), dir);
-		//return bvh->traverseVisible(ray, triangles, maxT);
-		for (int i = 0; i < triangles.size(); i++)
+		return bvh->traverseVisible(ray, triangles, maxT);
+		//适应无bvh版本
+	/*	for (int i = 0; i < triangles.size(); i++)
 		{
 			float t;
 			float u;
@@ -166,7 +181,7 @@ public:
 				}
 			}
 		}
-		return true;
+		return true;*/
 
 	}
 	Colour emit(Triangle* light, ShadingData shadingData, Vec3 wi)
