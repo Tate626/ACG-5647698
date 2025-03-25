@@ -97,8 +97,8 @@ public:
 	Vec3 sample(const ShadingData& shadingData, Sampler* sampler, Colour& reflectedColour, float& pdf)
 	{
 		// Add correct sampling code here
-		Vec3 wi = Vec3(0, 1, 0);
-		pdf = 1.0f;
+		Vec3 wi = SamplingDistributions::cosineSampleHemisphere(sampler->next(),sampler->next());
+		pdf = wi.z/M_PI;
 		reflectedColour = albedo->sample(shadingData.tu, shadingData.tv) / M_PI;
 		wi = shadingData.frame.toWorld(wi);
 		return wi;
@@ -110,7 +110,8 @@ public:
 	float PDF(const ShadingData& shadingData, const Vec3& wi)
 	{
 		// Add correct PDF code here
-		return 1.0f;
+		Vec3 temp = shadingData.frame.toLocal(wi);
+		return SamplingDistributions::cosineHemispherePDF(temp);
 	}
 	bool isPureSpecular()
 	{

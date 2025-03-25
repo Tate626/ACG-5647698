@@ -32,31 +32,42 @@ public:
 	static Vec3 uniformSampleHemisphere(float r1, float r2)
 	{
 		// Add code here
-		return Vec3(0, 0, 1);
+		float phi = 2.0f * M_PI * r1;
+		float cosTheta = r2;
+		float sinTheta = sqrt(1 - cosTheta * cosTheta);
+		return Vec3(sinTheta * cos(phi), sinTheta * sin(phi), cosTheta);
 	}
 	static float uniformHemispherePDF(const Vec3 wi)
 	{
 		// Add code here
-		return 1.0f;
+		return 1.0f / (2.0f * M_PI);
 	}
 	static Vec3 cosineSampleHemisphere(float r1, float r2)
 	{
 		// Add code here
-		return Vec3(0, 0, 1);
+		float r = sqrt(r1);
+		float theta = 2.0f * M_PI * r2;
+		float x = r * cos(theta);
+		float y = r * sin(theta);
+		float z = sqrt(std::max(0.0f, 1.0f - x * x - y * y));
+		return Vec3(x, y, z);
 	}
 	static float cosineHemispherePDF(const Vec3 wi)
 	{
 		// Add code here
-		return 1.0f;
+		return wi.z / M_PI;
 	}
 	static Vec3 uniformSampleSphere(float r1, float r2)
 	{
 		// Add code here
-		return Vec3(0, 0, 1);
+		float phi = 2.0f * M_PI * r1;
+		float cosTheta = 1.0f - 2.0f * r2;
+		float sinTheta = sqrt(1.0f - cosTheta * cosTheta);
+		return Vec3(sinTheta * cos(phi), sinTheta * sin(phi), cosTheta);
 	}
 	static float uniformSpherePDF(const Vec3& wi)
 	{
 		// Add code here
-		return 1.0f;
+		return 1.0f / (4.0f * M_PI);
 	}
 };

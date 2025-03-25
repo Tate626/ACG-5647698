@@ -84,6 +84,7 @@ public:
 		return (vertices[0].p + vertices[1].p + vertices[2].p) / 3.0f;
 	}
 	// Add code here
+	//m法，注意需要修改init
 	bool rayIntersect(const Ray& r, float& t, float& u, float& v) const
 	{
 		Vec3 P = r.dir.cross(e2);
@@ -114,7 +115,16 @@ public:
 	// Add code here
 	Vec3 sample(Sampler* sampler, float& pdf)
 	{
-		return Vec3(0, 0, 0);
+		float r1 = sampler->next();
+		float r2 = sampler->next();
+
+		// 根据 Barycentric 坐标对三角形进行采样
+		float sqrtr1 = sqrt(r1);
+		float dV1 = 1.0f - sqrtr1;
+		float dV2 = r2 * sqrtr1;
+		float dV3 = 1 - dV1 - dV2;
+		Vec3 pos = vertices[0].p * dV1 + vertices[1].p * dV2 + vertices[2].p * dV3;
+		return pos;
 	}
 	Vec3 gNormal()
 	{
