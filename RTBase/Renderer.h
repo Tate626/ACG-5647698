@@ -133,14 +133,17 @@ public:
 			{
 				return direct;
 			}
-			Colour bsdf;
+			//Colour bsdf;
+			//float pdf;
+			//Vec3 wi = SamplingDistributions::cosineSampleHemisphere(sampler->next(), sampler->next());
+			//pdf = SamplingDistributions::cosineHemispherePDF(wi);
+			//wi = shadingData.frame.toWorld(wi);
+			//bsdf = shadingData.bsdf->evaluate(shadingData, wi);
+			Colour indirect;
 			float pdf;
-			Vec3 wi = SamplingDistributions::cosineSampleHemisphere(sampler->next(), sampler->next());
-			pdf = SamplingDistributions::cosineHemispherePDF(wi);
-			wi = shadingData.frame.toWorld(wi);
-			bsdf = shadingData.bsdf->evaluate(shadingData, wi);
+			Vec3 wi = shadingData.bsdf->sample(shadingData, sampler, indirect, pdf);
 			//这里递归调用了这个方法，以这个交点当相机再次射线，模拟一次光线反射
-			pathThroughput = pathThroughput * bsdf * fabsf(Dot(wi, shadingData.sNormal)) / pdf;
+			pathThroughput = pathThroughput * indirect * fabsf(Dot(wi, shadingData.sNormal)) / pdf;
 			r.init(shadingData.x + (wi * EPSILON), wi);
 			return (direct + pathTrace(r, pathThroughput, depth + 1, sampler, shadingData.bsdf->isPureSpecular()));
 		}
