@@ -40,7 +40,7 @@ public:
 	//计算传入的空间中一点在随机一入射方向上的渲染结果，但是只计算能射到光源的入射方向，
 	//也就是说只计算已有光源，且能直接照射到此点的一条光线
 	//不包括反射效果，只计算了一个方向，取样时也是直接取已有光源，Next Event Estimation(nee)
-	Colour computeDirect(ShadingData shadingData, Sampler* sampler)
+	Colour computeDirect111(ShadingData shadingData, Sampler* sampler)
 	{
 		//直接跳过镜面类型
 		if (shadingData.bsdf->isPureSpecular() == true)
@@ -92,6 +92,137 @@ public:
 		}
 		return Colour(0.0f, 0.0f, 0.0f);
 	}
+
+	Colour computeDirect(ShadingData shadingData, Sampler* sampler)
+	{
+		//直接跳过镜面类型
+		if (shadingData.bsdf->isPureSpecular() == true)
+		{
+			return Colour(0.0f, 0.0f, 0.0f);
+		}
+		//用来存储最终光源
+		Colour L(0.0f, 0.0f, 0.0f);
+		//光源采样
+		{
+			// Sample a light
+			float pmf;
+			Light* light = scene->sampleLight(sampler, pmf);
+			// Sample a point on the light，返回光源上一点方向
+			float pdf;
+			Colour emitted;
+			Vec3 p = light->sample(shadingData, sampler, emitted, pdf);
+			//判断类型
+			if (light->isArea())
+			{
+				// Calculate GTerm
+				//wi就是入射方向
+				Vec3 wi = p - shadingData.x;
+				float l = wi.lengthSq();
+				wi = wi.normalize();
+				//计算几何项gterm，用于后续光照计算
+				float NoL = max(Dot(wi, shadingData.sNormal), 0.0f);
+				float NoL_light = max(-Dot(wi, light->normal(shadingData, wi)), 0.0f);
+				float GTerm = (NoL * NoL_light) / l;
+				if (GTerm > 0)
+				{
+					// Trace，可见性判断，是否被阻挡
+					if (scene->visible(shadingData.x, p))
+					{
+						Colour bsdfVal = shadingData.bsdf->evaluate(shadingData, wi);
+						if (!bsdfVal.isBlack())
+						{
+							// ----------------------
+							// PDF 转换（面积 → 方向）
+							// ----------------------
+							// p_light = pmf * pdfLightArea * (distance^2 / |n·wi|)
+							float pdfLight = (pmf * pdf*l) / NoL_light;
+
+							// BSDF pdf for same direction
+							float pdfBSDF = shadingData.bsdf->PDF(shadingData, wi);
+
+							// MIS 权重：balance heuristic
+							float weight = pdfLight / (pdfLight + pdfBSDF + 1e-6f);
+
+							// 最终值：emit * bsdf * G / pdfLight * weight
+							//L = L + bsdfVal* emitted* GTerm* weight / pdfLight;
+							Colour c = bsdfVal * emitted;
+							c =c* GTerm;
+							c =c* weight;
+							c =c/ pdfLight;
+							L =L+ c;
+						}
+					}
+				}
+			}
+			else
+				//说明此光照是方向光，等没有固定源头,需要进行近似计算处理
+			{
+				// Calculate GTerm
+				Vec3 wi = p;
+				float NoL = max(Dot(wi, shadingData.sNormal), 0.0f);
+				if (NoL > 0)
+				{
+					// Trace
+					if (scene->visible(shadingData.x, shadingData.x + (p * 10000.0f)))
+					{
+						Colour bsdfVal = shadingData.bsdf->evaluate(shadingData, wi);
+						if (!bsdfVal.isBlack())
+						{
+							// 假设 pdfLight 为方向光的方向PDF
+							float pdfLight = pmf * pdf;
+							float pdfBSDF = shadingData.bsdf->PDF(shadingData, wi);
+							float weight = pdfLight / (pdfLight + pdfBSDF + 1e-6f);
+
+							//L = L+bsdfVal * emitted * NoL * weight / pdfLight;
+							Colour c = bsdfVal * emitted;
+							c =c* NoL;
+							c =c* weight;
+							c =c/ pdfLight;
+							L = L+c;
+						}
+					}
+				}
+			}
+		}
+		//BSDF采样
+		{
+			float pdfBSDF;
+			Colour bsdfVal;
+			Vec3 wi = SamplingDistributions::cosineSampleHemisphere(sampler->next(), sampler->next());
+			pdfBSDF = SamplingDistributions::cosineHemispherePDF(wi);
+			wi = shadingData.frame.toWorld(wi);
+			bsdfVal = shadingData.bsdf->evaluate(shadingData, wi);
+
+			if (pdfBSDF > 1e-6f && !bsdfVal.isBlack())
+			{
+				Ray shadowRay(shadingData.x + wi * EPSILON, wi);
+				IntersectionData hit = scene->traverse(shadowRay);
+				if (hit.t < FLT_MAX)
+				{
+					ShadingData hitShading = scene->calculateShadingData(hit, shadowRay);
+					if (hitShading.bsdf && hitShading.bsdf->isLight())
+					{
+						Colour emitted = hitShading.bsdf->emit(hitShading, -wi);
+						if (!emitted.isBlack())
+						{
+							float NoL = max(Dot(shadingData.sNormal, wi), 0.0f);
+							float pdfLight = scene->lightPdf(shadingData, wi);  // 你可能需要实现这个
+							float weight = pdfBSDF / (pdfBSDF + pdfLight + 1e-6f);
+
+							//L = L+bsdfVal * emitted * NoL * weight / pdfBSDF;
+							Colour c = bsdfVal * emitted;
+							c =c* NoL;
+							c =c* weight;
+							c =c/ pdfBSDF;
+							L =L+ c;
+						}
+					}
+				}
+			}
+		}
+	}
+
+
 	//canhitlight用于判断能否命中光源
 	//这个是直接光加上间接光
 	Colour pathTrace(Ray& r, Colour& pathThroughput, int depth, Sampler* sampler, bool canHitLight = true)
@@ -135,6 +266,7 @@ public:
 			}
 			Colour bsdf;
 			float pdf;
+			//bsdf采样，不同于光源采样，随机取样
 			Vec3 wi = SamplingDistributions::cosineSampleHemisphere(sampler->next(), sampler->next());
 			pdf = SamplingDistributions::cosineHemispherePDF(wi);
 			wi = shadingData.frame.toWorld(wi);
@@ -147,6 +279,8 @@ public:
 		//没打到，返回背景材质
 		return scene->background->evaluate(shadingData, r.dir);
 	}
+
+
 	//从相机发出的一条射线返回一个颜色
 	//这个方法使用后就没有间接光了
 	Colour direct(Ray& r, Sampler* sampler)
@@ -204,8 +338,10 @@ public:
 	//		for (unsigned int x = 0; x < film->width; x++)
 	//		{//这里就是光线追踪（遍历每一个像素点，生成光线，返回一个颜色绘制）
 	//		    //这里取每个像素点的中心来生成光线
-	//			float px = x + 0.5f;
-	//			float py = y + 0.5f;
+	//			//float px = x + 0.5f;
+	//			//float py = y + 0.5f;
+	//			float px = x + samplers->next();
+	//			float py = y + samplers->next();
 	//			Ray ray = scene->camera.generateRay(px, py);
 	//			//Colour col = viewNormals(ray);
 	//			//Colour col = albedo(ray);
@@ -244,9 +380,11 @@ public:
 				{
 					for (int x = startX; x < endX; x++)
 					{
-						float px = x + 0.5f;
-						float py = y + 0.5f;
+						//float px = x + 0.5f;
+						//float py = y + 0.5f;
 
+						float px = x + samplers->next();
+						float py = y + samplers->next();
 						Ray ray = scene->camera.generateRay(px, py);
 
 						//Colour col = viewNormals(ray);

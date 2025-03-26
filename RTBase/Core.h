@@ -90,6 +90,13 @@ public:
 	{
 		return ((0.2126f * r) + (0.7152f * g) + (0.0722f * b));
 	}
+	bool isBlack() {
+		if (r == 0)
+			if (g == 0)
+				if (b == 0)
+					return true;
+		return false;
+	}
 };
 
 class Vec3

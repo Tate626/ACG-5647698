@@ -65,6 +65,7 @@ class BSDF
 public:
 	Colour emission;
 	virtual Vec3 sample(const ShadingData& shadingData, Sampler* sampler, Colour& reflectedColour, float& pdf) = 0;
+	//返回给定入射角度下，此材质应该返回的光效果，不同角度的漫反射
 	virtual Colour evaluate(const ShadingData& shadingData, const Vec3& wi) = 0;
 	virtual float PDF(const ShadingData& shadingData, const Vec3& wi) = 0;
 	virtual bool isPureSpecular() = 0;

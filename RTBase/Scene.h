@@ -140,6 +140,38 @@ public:
 		pmf = 1.0f / (float)lights.size();
 		return lights[std::min((int)(r1 * lights.size()), (int)(lights.size() - 1))];
 	}
+
+	float lightPdf(const ShadingData& shadingData, const Vec3& wi)
+	{
+		// 沿着 wi 发出 shadow ray，查看是否打到光源
+		Ray shadowRay(shadingData.x + wi * EPSILON, wi);
+		IntersectionData hit = traverse(shadowRay);
+
+		if (hit.t < FLT_MAX)
+		{
+			ShadingData hitShading = calculateShadingData(hit, shadowRay);
+
+			if (hitShading.bsdf && hitShading.bsdf->isLight())
+			{
+				// 遍历所有光源，尝试找到 emit() 有响应的光源
+				for (Light* light : lights)
+				{
+					// 注意：这里使用 evaluate 判断能否从该方向看到光源正面
+					Colour eval = light->evaluate(hitShading, -wi);  // -wi = 从光源看来的方向
+					if (!eval.isBlack())
+					{
+						// 找到了这盏光源
+						float pdfDir = light->PDF(shadingData, wi);
+						float pmf = 1.0f / lights.size();  // 均匀采样光源
+						return pmf * pdfDir;
+					}
+				}
+			}
+		}
+
+		return 0.0f;
+	}
+
 	// Do not modify any code below this line
 	void init(std::vector<Triangle> meshTriangles, std::vector<BSDF*> meshMaterials, Light* _background)
 	{
