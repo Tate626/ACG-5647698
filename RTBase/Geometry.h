@@ -506,9 +506,9 @@ public:
 					if (t > 0 && t < intersection.t) {  // 确保t为正且是最近的交点
 						intersection.t = t;
 						intersection.ID = offset + i;
-						intersection.alpha = u;
-						intersection.beta = v;
-						intersection.gamma = 1.0f - (u + v);
+						intersection.alpha = 1.0f - (u + v);
+						intersection.beta = u;
+						intersection.gamma = v;
 					}
 				}
 			}

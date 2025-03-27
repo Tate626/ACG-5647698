@@ -35,7 +35,7 @@ class ShadingHelper
 public:
 	//返回折射方向wi（局部），传入的也是局部入射wo及折射率比
 	//全反射则返回false
-	bool refract(const Vec3& wo, float eta, Vec3& wi)
+	static bool refract(const Vec3& wo, float eta, Vec3& wi)
 	{
 		// cosθi：入射角余弦（在局部空间中 = wo.z）
 		float cosThetaI = wo.z;
@@ -415,40 +415,31 @@ public:
 
 		float cosThetaI = std::abs(woLocal.z);
 		float fresnel = ShadingHelper::fresnelDielectric(cosThetaI, etaI, etaT);
-
+		//用来判断发生哪个事件
 		bool reflectEvent = sampler->next() < fresnel;
 
 		Vec3 wiLocal;
 		if (reflectEvent)
 		{
-			// Perfect mirror reflection
+			// 反射
 			wiLocal = Vec3(-woLocal.x, -woLocal.y, woLocal.z);
-			reflectedColour = albedo->sample(shadingData.tu, shadingData.tv);
+			reflectedColour = albedo->sample(shadingData.tu, shadingData.tv) * fresnel;
 			pdf = fresnel;
 		}
 		else
 		{
-			// Perfect transmission (Snell's law)
-			float sinTheta2 = eta * eta * (1.0f - cosThetaI * cosThetaI);
-			if (sinTheta2 > 1.0f)
+			//折射
+			bool temp = ShadingHelper::refract(woLocal, eta, wiLocal);
+			if (!temp)
 			{
-				// Total internal reflection fallback
+				// 如果是全反射
 				wiLocal = Vec3(-woLocal.x, -woLocal.y, woLocal.z);
 				reflectedColour = albedo->sample(shadingData.tu, shadingData.tv);
 				pdf = 1.0f;
 				return shadingData.frame.toWorld(wiLocal);
 			}
 
-			float cosThetaT = std::sqrt(1.0f - sinTheta2);
-			cosThetaT = entering ? -cosThetaT : cosThetaT;
-
-			wiLocal = Vec3(
-				-eta * woLocal.x,
-				-eta * woLocal.y,
-				cosThetaT
-			);
-
-			// Radiance scaling
+			//
 			float scale = (eta * eta);
 			reflectedColour = albedo->sample(shadingData.tu, shadingData.tv) * scale * (1.0f - fresnel);
 			pdf = 1.0f - fresnel;
@@ -459,6 +450,33 @@ public:
 	Colour evaluate(const ShadingData& shadingData, const Vec3& wi)
 	{
 		// Replace this with Glass evaluation code
+		Vec3 woLocal = shadingData.frame.toLocal(shadingData.wo);
+		Vec3 wiLocal = shadingData.frame.toLocal(wi);
+
+		bool entering = woLocal.z > 0.0f;
+		float etaI = entering ? extIOR : intIOR;
+		float etaT = entering ? intIOR : extIOR;
+		float eta = etaI / etaT;
+
+		float cosThetaI = std::abs(woLocal.z);
+		float fresnel = ShadingHelper::fresnelDielectric(cosThetaI, etaI, etaT);
+
+		// === 检查是否是镜面反射方向 ===
+		Vec3 expectedReflect = Vec3(-woLocal.x, -woLocal.y, woLocal.z);
+		if (Dot(expectedReflect, wiLocal)>0.999f) {
+			return albedo->sample(shadingData.tu, shadingData.tv) * fresnel / std::abs(expectedReflect.z);
+		}
+
+		// === 检查是否是折射方向 ===
+		Vec3 expectedRefract;
+		if (ShadingHelper::refract(woLocal, eta, expectedRefract)) {
+			if (Dot(expectedRefract, wiLocal) > 0.999f) {
+				float scale = eta * eta;
+				return albedo->sample(shadingData.tu, shadingData.tv) * scale * (1.0f - fresnel) / std::abs(expectedRefract.z);
+			}
+		}
+
+		// 不是镜面反射或折射方向，返回 0
 		return Colour(0.0f, 0.0f, 0.0f);
 	}
 	float PDF(const ShadingData& shadingData, const Vec3& wi)
@@ -642,93 +660,68 @@ public:
 	{
 		// Replace this with Plastic sampling code
 		Vec3 woLocal = shadingData.frame.toLocal(shadingData.wo);
-		float exponent = alphaToPhongExponent();
+		bool entering = woLocal.z > 0.0f;
+		float etaI = entering ? extIOR : intIOR;
+		float etaT = entering ? intIOR : extIOR;
+		float eta = etaI / etaT;
 
-		// 随机决定是采样漫反射还是高光反射
-		float choice = sampler->next();
+		float cosThetaI = std::abs(woLocal.z);
+		float fresnel = ShadingHelper::fresnelDielectric(cosThetaI, etaI, etaT);
+		bool reflectEvent = sampler->next() < fresnel;
 		Vec3 wiLocal;
+		if (reflectEvent) {
+			//glossy
+			float exponent = alphaToPhongExponent();
+			// 采样两个随机数
+			float xi1 = sampler->next();
+			float xi2 = sampler->next();
+			// 根据公式采样 theta 和 phi（z-up lobe）
+			float theta = acos(pow(xi1, 1.0f / (exponent + 1.0f)));
+			float phi = 2.0f * M_PI * xi2;
 
-		if (choice < 0.5f)
-		{
-			// Diffuse 半球采样
-			wiLocal = SamplingDistributions::cosineSampleHemisphere(sampler->next(), sampler->next());
+			// lobe 中的方向（局部空间 z-up）
+			float sinTheta = sin(theta);
+			Vec3 lobeDir(
+				sinTheta * cos(phi),
+				sinTheta * sin(phi),
+				cos(theta)
+			);
+			// 计算镜面反射方向 wr
+			Vec3 wr = Vec3(-woLocal.x, -woLocal.y, woLocal.z);
+
+			// 创建以 wr 为主轴的局部坐标系
+			Frame glossyFrame;
+			glossyFrame.fromVector(wr);
+
+			// 将 z-up lobe 方向旋转到 wr 方向上
+			wiLocal = glossyFrame.toWorld(lobeDir);
+
+			// 反射颜色 = albedo * phong eval / pdf
+			float dotWRWi = std::max(0.0f, Dot(wr, wiLocal));
+			pdf = (exponent + 1.0f) / (2.0f * M_PI) * pow(dotWRWi, exponent);
+			float phongEval = (exponent + 2.0f) / (2.0f * M_PI) * pow(dotWRWi, exponent);
+			reflectedColour = albedo->sample(shadingData.tu, shadingData.tv) * phongEval;
 		}
-		else
-		{
-			// Phong 高光采样：采样一个围绕理想反射方向的 lobe
-			Vec3 reflectDir = Vec3(-woLocal.x, -woLocal.y, woLocal.z);
-			float phi = 2.0f * M_PI * sampler->next();
-			float cosTheta = powf(sampler->next(), 1.0f / (exponent + 1.0f));
-			float sinTheta = std::sqrt(std::max(0.0f, 1.0f - cosTheta * cosTheta));
-			Vec3 lobe = Vec3(std::cos(phi) * sinTheta, std::sin(phi) * sinTheta, cosTheta);
-			wiLocal = shadingData.frame.toWorld(wiLocal);
-
+		else {
+			//漫反射
+			Vec3 wi = SamplingDistributions::cosineSampleHemisphere(sampler->next(), sampler->next());
+			pdf = wi.z / M_PI;
+			reflectedColour = albedo->sample(shadingData.tu, shadingData.tv) / M_PI;
 		}
-
-		if (wiLocal.z <= 0.0f)
-		{
-			pdf = 0.0f;
-			reflectedColour = Colour(0.0f, 0.0f, 0.0f);
-			return Vec3(0.0f, 0.0f, 0.0f);
-		}
-
-		Vec3 wi = shadingData.frame.toWorld(wiLocal);
-
-		// Fresnel
-		float cosTheta = std::abs(woLocal.z);
-		float F = ShadingHelper::fresnelDielectric(cosTheta, intIOR, extIOR);
-
-		// 颜色和 PDF
-		Colour diffuse = albedo->sample(shadingData.tu, shadingData.tv) / M_PI;
-		float phongNorm = (exponent + 2.0f) / (2.0f * M_PI);
-		Vec3 reflectDir = Vec3(-woLocal.x, -woLocal.y, woLocal.z);
-		float dotRH = std::max(0.0f, Dot(reflectDir, wiLocal));
-		Colour glossy = albedo->sample(shadingData.tu, shadingData.tv) * phongNorm * std::pow(dotRH, exponent);
-
-		reflectedColour = diffuse*(1.0f - F) * 2.0f + glossy *F * 2.0f;
-		pdf = 0.5f * SamplingDistributions::cosineHemispherePDF(wiLocal) + 0.5f * phongNorm * std::pow(dotRH, exponent);
-
-		return wi;
+		return shadingData.frame.toWorld(wiLocal);
 	}
 	Colour evaluate(const ShadingData& shadingData, const Vec3& wi)
 	{
 		// Replace this with Plastic evaluation code
+			// === Step 1: 把方向从世界空间变到局部空间 ===
 		Vec3 woLocal = shadingData.frame.toLocal(shadingData.wo);
 		Vec3 wiLocal = shadingData.frame.toLocal(wi);
-
-		if (wiLocal.z <= 0.0f || woLocal.z <= 0.0f)
-			return Colour(0.0f, 0.0f, 0.0f);
-
-		// Fresnel
-		float cosTheta = std::abs(woLocal.z);
-		float F = ShadingHelper::fresnelDielectric(cosTheta, intIOR, extIOR);
-
-		// Diffuse term
-		Colour diffuse = albedo->sample(shadingData.tu, shadingData.tv) / M_PI;
-
-		// Phong specular
-		Vec3 reflectDir = Vec3(-woLocal.x, -woLocal.y, woLocal.z);
-		float exponent = alphaToPhongExponent();
-		float dotRH = std::max(0.0f, Dot(reflectDir, wiLocal));
-		float phongNorm = (exponent + 2.0f) / (2.0f * M_PI);
-		Colour glossy = albedo->sample(shadingData.tu, shadingData.tv) * phongNorm * std::pow(dotRH, exponent);
-
-		return diffuse * (1.0f - F) + glossy * F;
+		return Colour(0.0f, 0.0f, 0.0f);
 	}
 	float PDF(const ShadingData& shadingData, const Vec3& wi)
 	{
 		// Replace this with Plastic PDF
-		Vec3 woLocal = shadingData.frame.toLocal(shadingData.wo);
-		Vec3 wiLocal = shadingData.frame.toLocal(wi);
-		if (wiLocal.z <= 0.0f || woLocal.z <= 0.0f)
-			return 0.0f;
-
-		Vec3 reflectDir = Vec3(-woLocal.x, -woLocal.y, woLocal.z);
-		float exponent = alphaToPhongExponent();
-		float dotRH = std::max(0.0f, Dot(reflectDir, wiLocal));
-		float phongPDF = (exponent + 1.0f) / (2.0f * M_PI) * std::pow(dotRH, exponent);
-
-		return 0.5f * SamplingDistributions::cosineHemispherePDF(wiLocal) + 0.5f * phongPDF;
+		return 0.f;
 	}
 	bool isPureSpecular()
 	{
