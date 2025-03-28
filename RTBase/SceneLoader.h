@@ -171,7 +171,7 @@ void loadInstance(std::string sceneName, std::vector<Triangle>& meshTriangles, s
 		Colour k;
 		instance.material.find("eta").getValuesAsVector3(eta.r, eta.g, eta.b);
 		instance.material.find("k").getValuesAsVector3(k.r, k.g, k.b);
-		float roughness = instance.material.find("roughness").getValue(1.0f);
+		float roughness = instance.material.find("roughness").getValue(1.0f)+0.001f;
 		material = new ConductorBSDF(loadTexture(filename, textureManager), eta, k, roughness);
 		meshMaterials.push_back(material);
 	}
