@@ -152,28 +152,115 @@ public:
 	}
 };
 
-class GaussianFilter : public ImageFilter
-{
+class GaussianFilter : public ImageFilter {
 public:
-	int r1 = 1;
+	float sigma; // 高斯分布的标准差
+	int radius;  // 滤波器半径，即向四周扩展的像素数
 
-	float filter(float x, float y) const
-	{
-		return exp(-(x * x + y * y) / (2.0f * r1 * r1));
+	// 构造函数，可传入 sigma，默认值为 1.0f
+	GaussianFilter(float sigma = 1.0f) : sigma(sigma) {
+		// 使用 ceil(2*sigma) 作为半径，通常能覆盖约 95% 的能量
+		radius = static_cast<int>(std::ceil(2 * sigma));
 	}
-	int size() const
-	{
-		return int(2.0f * r1);;
+
+	// 返回给定偏移处的高斯权重（未归一化，归一化在 splat 中完成）
+	float filter(float x, float y) const override {
+		return std::exp(-(x * x + y * y) / (2 * sigma * sigma));
+	}
+
+	// 返回滤波器半径。splat 中会遍历 [ -size, size ] 范围
+	int size() const override {
+		return radius;
 	}
 };
+
+//旧版，不支持自适应采样
+//class Film
+//{
+//public:
+//	film这个数组管理着累计渲染结果，splat每帧把结果存入，tomap除以spp就是累计渲染结果
+//	Colour* film;
+//	unsigned int width;//图片尺寸（分辨率）
+//	unsigned int height;
+//	int SPP;//采样次数（每个像素）
+//	ImageFilter* filter;
+//
+//	void splat(const float x, const float y, const Colour& L)
+//		计算每束光线对周围像素的影响，传入的x，y为浮点数，代表这束光线的位置
+//		使用各种filter来计算这个光线对周围像素的权重
+//	{
+//		float filterWeights[25]; // Storage to cache weights 
+//		unsigned int indices[25]; // Store indices to minimize computations 
+//		unsigned int used = 0;
+//		float total = 0;
+//		int size = filter->size();
+//		for (int i = -size; i <= size; i++) {
+//			for (int j = -size; j <= size; j++) {
+//				int px = (int)x + j;
+//				int py = (int)y + i;
+//				if (px >= 0 && px < width && py >= 0 && py < height) {
+//					indices[used] = (py * width) + px;
+//					filterWeights[used] = filter->filter(j, i);
+//					total += filterWeights[used];
+//					used++;
+//				}
+//			}
+//		}
+//		for (int i = 0; i < used; i++) {
+//			film[indices[i]] = film[indices[i]] + (L * filterWeights[i] / total);
+//		}
+//		 Code to splat a smaple with colour L into the image plane using an ImageFilter
+//	}
+//	void tonemap(int x, int y, unsigned char& r, unsigned char& g, unsigned char& b, float exposure = 1.0f)
+//		普通伽马校正方法
+//	{
+//		Colour pixel = film[y * width + x] * (exposure / (float)SPP);
+//		r = std::min(powf(std::max(pixel.r, 0.0f), 1.0f / 2.2f) * 255, 255.0f);
+//		g = std::min(powf(std::max(pixel.g, 0.0f), 1.0f / 2.2f) * 255, 255.0f);
+//		b = std::min(powf(std::max(pixel.b, 0.0f), 1.0f / 2.2f) * 255, 255.0f);
+//		 Return a tonemapped pixel at coordinates x, y
+//	}
+//	 Do not change any code below this line
+//	void init(int _width, int _height, ImageFilter* _filter)
+//	{
+//		width = _width;
+//		height = _height;
+//		film = new Colour[width * height];
+//		clear();
+//		filter = _filter;
+//	}
+//	void clear()
+//	{
+//		memset(film, 0, width * height * sizeof(Colour));
+//		SPP = 0;
+//	}
+//	void incrementSPP()
+//	{
+//		SPP++;
+//	}
+//	void save(std::string filename)
+//	{
+//		Colour* hdrpixels = new Colour[width * height];
+//		for (unsigned int i = 0; i < (width * height); i++)
+//		{
+//			hdrpixels[i] = film[i] / (float)SPP;
+//		}
+//		stbi_write_hdr(filename.c_str(), width, height, 3, (float*)hdrpixels);
+//		delete[] hdrpixels;
+//	}
+//};
+
 
 class Film
 {
 public:
+	//film这个数组管理着累计渲染结果，splat每帧把结果存入，tomap除以spp就是累计渲染结果
 	Colour* film;
 	unsigned int width;//图片尺寸（分辨率）
 	unsigned int height;
-	int SPP;//采样次数（每个像素）
+	int* sppBuffer;//记录每像素的实际采样数
+	float* weightBuffer;
+	int SPP;//循环帧数（每个像素）
 	ImageFilter* filter;
 
 	void splat(const float x, const float y, const Colour& L)
@@ -198,14 +285,22 @@ public:
 			}
 		}
 		for (int i = 0; i < used; i++) {
-			film[indices[i]] = film[indices[i]] + (L * filterWeights[i] / total);
+			int index = indices[i];
+			// 归一化后的权重
+			float normWeight = filterWeights[i] / total;
+			film[index] = film[index] + (L * normWeight);
+			weightBuffer[index] += normWeight;
+			sppBuffer[index]++;  // 依然统计 splat 次数（调试或其他用途）
 		}
 		// Code to splat a smaple with colour L into the image plane using an ImageFilter
 	}
 	void tonemap(int x, int y, unsigned char& r, unsigned char& g, unsigned char& b, float exposure = 1.0f)
 		//普通伽马校正方法
 	{
-		Colour pixel = film[y * width + x] * (exposure / (float)SPP);
+		int idx = y * width + x;
+		float totalWeight = std::max(0.0001f, weightBuffer[idx]);
+		// 使用累计贡献除以累计权重得到平均颜色
+		Colour pixel = film[idx] * (exposure / totalWeight);
 		r = std::min(powf(std::max(pixel.r, 0.0f), 1.0f / 2.2f) * 255, 255.0f);
 		g = std::min(powf(std::max(pixel.g, 0.0f), 1.0f / 2.2f) * 255, 255.0f);
 		b = std::min(powf(std::max(pixel.b, 0.0f), 1.0f / 2.2f) * 255, 255.0f);
@@ -217,12 +312,16 @@ public:
 		width = _width;
 		height = _height;
 		film = new Colour[width * height];
+		weightBuffer = new float[width * height];
+		sppBuffer = new int[width * height];
 		clear();
 		filter = _filter;
 	}
 	void clear()
 	{
 		memset(film, 0, width * height * sizeof(Colour));
+		memset(weightBuffer, 0, width * height * sizeof(float));
+		memset(sppBuffer, 0, width * height * sizeof(int));
 		SPP = 0;
 	}
 	void incrementSPP()
@@ -234,7 +333,8 @@ public:
 		Colour* hdrpixels = new Colour[width * height];
 		for (unsigned int i = 0; i < (width * height); i++)
 		{
-			hdrpixels[i] = film[i] / (float)SPP;
+			int spp = std::max(1, sppBuffer[i]); // 避免除以 0
+			hdrpixels[i] = film[i] * (1.0f / (float)spp);
 		}
 		stbi_write_hdr(filename.c_str(), width, height, 3, (float*)hdrpixels);
 		delete[] hdrpixels;

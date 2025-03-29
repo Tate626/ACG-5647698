@@ -11,6 +11,16 @@
 #include <thread>
 #include <functional>
 
+struct Tile {
+	int tileX, tileY;
+	float variance = 0.0f;
+	//本轮权重
+	float weight = 1.0f;
+	int currentSPP = 0;
+	//本轮采样数
+	int targetSPP = 1;
+};
+
 class RayTracer
 {
 public:
@@ -25,6 +35,8 @@ public:
 		scene = _scene;
 		canvas = _canvas;
 		film = new Film();
+		//改成高斯滤波器了
+		//film->init((unsigned int)scene->camera.width, (unsigned int)scene->camera.height, new GaussianFilter());
 		film->init((unsigned int)scene->camera.width, (unsigned int)scene->camera.height, new BoxFilter());
 		SYSTEM_INFO sysInfo;
 		GetSystemInfo(&sysInfo);
@@ -225,61 +237,124 @@ public:
 	//	}
 	//}
 
-		//多线程
+	 //多线程
+	//void render()
+	//{
+	//	static const int TILE_SIZE = 32;
+	//	film->incrementSPP();
+	//	std::vector<std::thread> workers;
+	//	int numThreads = numProcs;
+	//	int numTilesX = (film->width + TILE_SIZE - 1) / TILE_SIZE;
+	//	int numTilesY = (film->height + TILE_SIZE - 1) / TILE_SIZE;
+	//	auto renderTile = [&](int tileX, int tileY, int threadId)
+	//		{
+	//			int startX = tileX * TILE_SIZE;
+	//			int startY = tileY * TILE_SIZE;
+	//			int endX = min(startX + TILE_SIZE, (int)film->width);
+	//			int endY = min(startY + TILE_SIZE, (int)film->height);
+	//			for (int y = startY; y < endY; y++)
+	//			{
+	//				for (int x = startX; x < endX; x++)
+	//				{
+	//					float px = x + samplers->next();
+	//					float py = y + samplers->next();
+	//					Ray ray = scene->camera.generateRay(px, py);
+	//					//Colour col = viewNormals(ray);
+	//		            //Colour col = albedo(ray);
+	//					Colour pathThroughput(1.0f, 1.0f, 1.0f);
+	//					//Colour col = direct(ray, &samplers[threadId]);
+	//					Colour col = pathTrace(ray, pathThroughput, 0, &samplers[threadId]);
+	//					film->splat(px, py, col);
+	//					unsigned char r = (unsigned char)(col.r * 255);
+	//					unsigned char g = (unsigned char)(col.g * 255);
+	//					unsigned char b = (unsigned char)(col.b * 255);
+	//					film->tonemap(x, y, r, g, b);
+	//					canvas->draw(x, y, r, g, b);
+	//				}
+	//			}
+	//		};
+	//	auto workerFunc = [&](int threadId)
+	//		{
+	//			for (int tileY = 0; tileY < numTilesY; tileY++)
+	//			{
+	//				for (int tileX = 0; tileX < numTilesX; tileX++)
+	//				{
+	//					if (((tileY * numTilesX) + tileX) % numThreads == threadId)
+	//					{
+	//						renderTile(tileX, tileY, threadId);
+	//					}
+	//				}
+	//			}
+	//		};
+	//	for (int i = 0; i < numThreads; i++)
+	//	{
+	//		workers.emplace_back(workerFunc, i);
+	//	}
+	//	for (auto& worker : workers)
+	//	{
+	//		worker.join();
+	//	}
+	//}
+
+	 //多线程，适应性采样版
 	void render()
 	{
 		static const int TILE_SIZE = 32;
 		film->incrementSPP();
 		std::vector<std::thread> workers;
+		std::vector<Tile> tiles;
 		int numThreads = numProcs;
 		int numTilesX = (film->width + TILE_SIZE - 1) / TILE_SIZE;
 		int numTilesY = (film->height + TILE_SIZE - 1) / TILE_SIZE;
 
-
-		auto renderTile = [&](int tileX, int tileY, int threadId)
+		// 初始化所有 tile 信息
+		for (int tileY = 0; tileY < numTilesY; ++tileY)
+		{
+			for (int tileX = 0; tileX < numTilesX; ++tileX)
 			{
-				int startX = tileX * TILE_SIZE;
-				int startY = tileY * TILE_SIZE;
+				Tile tile;
+				tile.tileX = tileX;
+				tile.tileY = tileY;
+				// 其他字段（如 variance、weight、currentSPP、targetSPP）可以在 Tile 结构体中预置默认值
+				tiles.push_back(tile);
+			}
+		}
+
+		// 渲染每个 tile 的函数：每个像素采 INIT_SPP 个样本（此处为 1 个）
+		auto renderTile = [&](Tile& tile, int threadId)
+			{
+				int startX = tile.tileX * TILE_SIZE;
+				int startY = tile.tileY * TILE_SIZE;
 				int endX = min(startX + TILE_SIZE, (int)film->width);
 				int endY = min(startY + TILE_SIZE, (int)film->height);
 
-				for (int y = startY; y < endY; y++)
+				for (int s = 0; s < tile.targetSPP; ++s)
 				{
-					for (int x = startX; x < endX; x++)
+					for (int y = startY; y < endY; y++)
 					{
-						float px = x + 0.5f;
-						float py = y + 0.5f;
+						for (int x = startX; x < endX; x++)
+						{
+							float px = x + samplers->next();
+							float py = y + samplers->next();
 
-						Ray ray = scene->camera.generateRay(px, py);
-
-						//Colour col = viewNormals(ray);
-			            //Colour col = albedo(ray);
-
-						Colour pathThroughput(1.0f, 1.0f, 1.0f);
-						//Colour col = direct(ray, &samplers[threadId]);
-						Colour col = pathTrace(ray, pathThroughput, 0, &samplers[threadId]);
-
-						film->splat(px, py, col);
-
-						unsigned char r = (unsigned char)(col.r * 255);
-						unsigned char g = (unsigned char)(col.g * 255);
-						unsigned char b = (unsigned char)(col.b * 255);
-						film->tonemap(x, y, r, g, b);
-						canvas->draw(x, y, r, g, b);
+							Ray ray = scene->camera.generateRay(px, py);
+							Colour pathThroughput(1.0f, 1.0f, 1.0f);
+							Colour col = pathTrace(ray, pathThroughput, 0, &samplers[threadId]);
+							film->splat(px, py, col);
+						}
 					}
 				}
+				tile.currentSPP += tile.targetSPP;
 			};
 
+		// 多线程遍历 tiles 数组（按 round-robin 分配）
 		auto workerFunc = [&](int threadId)
 			{
-				for (int tileY = 0; tileY < numTilesY; tileY++)
+				for (size_t i = 0; i < tiles.size(); ++i)
 				{
-					for (int tileX = 0; tileX < numTilesX; tileX++)
+					if (i % numThreads == threadId)
 					{
-						if (((tileY * numTilesX) + tileX) % numThreads == threadId)
-						{
-							renderTile(tileX, tileY, threadId);
-						}
+						renderTile(tiles[i], threadId);
 					}
 				}
 			};
@@ -288,13 +363,100 @@ public:
 		{
 			workers.emplace_back(workerFunc, i);
 		}
-
 		for (auto& worker : workers)
 		{
 			worker.join();
 		}
 
+		for (int y = 0; y < film->height; ++y)
+		{
+			for (int x = 0; x < film->width; ++x)
+			{
+				unsigned char r, g, b;
+				film->tonemap(x, y, r, g, b);
+				canvas->draw(x, y, r, g, b);
+			}
+		}
+
+		// 每 4 帧更新一次方差（仅计算并输出调试信息）
+		if (getSPP() % 4 == 0)
+		{
+			float totalVariance = 0.0f;
+			//计算方差
+			for (auto& tile : tiles)
+			{
+				int startX = tile.tileX * TILE_SIZE;
+				int startY = tile.tileY * TILE_SIZE;
+				int endX = min(startX + TILE_SIZE, (int)film->width);
+				int endY = min(startY + TILE_SIZE, (int)film->height);
+
+				int pixelCount = 0;
+				float variance = 0.0f;
+
+				for (int y = startY; y < endY; ++y)
+				{
+					for (int x = startX; x < endX; ++x)
+					{
+						//历史累计值
+						int idx = y * film->width + x;
+						int spp = max(1, film->sppBuffer[idx]); // 防止除 0
+						Colour E = film->film[y * film->width + x] * (1.0f / (float)spp);
+						//高斯近似计算当前帧值
+						Colour I = Colour(0.0f, 0.0f, 0.0f);
+						float weightSum = 0.0f;
+						int size = film->filter->size();
+
+						for (int dy = -size; dy <= size; dy++)
+						{
+							for (int dx = -size; dx <= size; dx++)
+							{
+								int nx = x + dx;
+								int ny = y + dy;
+
+								if (nx >= 0 && nx < film->width && ny >= 0 && ny < film->height)
+								{
+									float w = film->filter->filter(dx, dy);
+									Colour neighbor = film->film[ny * film->width + nx] * (1.0f / (float)spp);
+									I = I + neighbor * w;
+									weightSum += w;
+								}
+							}
+						}
+						float E_lum = 0.2126f * E.r + 0.7152f * E.g + 0.0722f * E.b;
+						float I_lum = 0.2126f * I.r + 0.7152f * I.g + 0.0722f * I.b;
+						float diff = E_lum - I_lum;
+						variance += diff * diff;
+						pixelCount++;
+					}
+				}
+
+				if (pixelCount > 1)
+					variance /= (pixelCount - 1);
+				else
+					variance = 0.0f;
+
+				tile.variance = variance;
+				totalVariance += variance;
+			}
+			//由方差计算权重
+			for (auto& tile : tiles)
+			{
+				if (totalVariance > 0.0f)
+					tile.weight = tile.variance / totalVariance;
+				else
+					tile.weight = 1.0f / tiles.size(); // fallback：平均采样
+			}
+			//调整tile结构体
+			int totalSamplesPerFrame = film->width * film->height; 
+			for (auto& tile : tiles)
+			{
+				float tileSampleBudget = tile.weight * totalSamplesPerFrame;
+				int tileSampleCount = (int)(tileSampleBudget); // 这是总共多少次采样
+				tile.targetSPP = max(1, tileSampleCount / (TILE_SIZE * TILE_SIZE));
+			}
+		}
 	}
+
 
 	int getSPP()
 	{
