@@ -6,6 +6,7 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #define __STDC_LIB_EXT1__
 #include "stb_image_write.h"
+#include <OpenImageDenoise/oidn.hpp>
 
 // Stop warnings about buffer overruns if size is zero. Size should never be zero and if it is the code handles it.
 #pragma warning( disable : 6386)
@@ -250,6 +251,9 @@ public:
 //	}
 //};
 
+class Film;
+
+void DenoiseFilm(Film* film);
 
 class Film
 {
@@ -259,48 +263,98 @@ public:
 	unsigned int width;//图片尺寸（分辨率）
 	unsigned int height;
 	int* sppBuffer;//记录每像素的实际采样数
-	float* weightBuffer;
+	float* weightBuffer;//优化sppbuffer
+	//以下三个存储用于降噪的
+	float* albedoBuffer;
+	float* normalBuffer;
+	float* colourBuffer;
+	float* outputBuffer;
 	int SPP;//循环帧数（每个像素）
 	ImageFilter* filter;
 
 	void splat(const float x, const float y, const Colour& L)
-		//计算每束光线对周围像素的影响，传入的x，y为浮点数，代表这束光线的位置
-		//使用各种filter来计算这个光线对周围像素的权重
 	{
-		float filterWeights[25]; // Storage to cache weights 
-		unsigned int indices[25]; // Store indices to minimize computations 
+		float filterWeights[25];      // 滤波器的权重
+		unsigned int indices[25];     // 对应像素在 buffer 中的 index
 		unsigned int used = 0;
 		float total = 0;
 		int size = filter->size();
+
+		// 1. 计算滤波器覆盖的区域 & 权重
 		for (int i = -size; i <= size; i++) {
 			for (int j = -size; j <= size; j++) {
 				int px = (int)x + j;
 				int py = (int)y + i;
-				if (px >= 0 && px < width && py >= 0 && py < height) {
-					indices[used] = (py * width) + px;
+				if (px >= 0 && px < (int)width && py >= 0 && py < (int)height) {
+					int index = py * width + px;
+					indices[used] = index;
 					filterWeights[used] = filter->filter(j, i);
 					total += filterWeights[used];
 					used++;
 				}
 			}
 		}
+
+		// 2. 写入 film 累计原始值、更新权重
 		for (int i = 0; i < used; i++) {
 			int index = indices[i];
-			// 归一化后的权重
 			float normWeight = filterWeights[i] / total;
+
+			// 👇 未平均的累计值
 			film[index] = film[index] + (L * normWeight);
+
+			// 👇 累计权重
 			weightBuffer[index] += normWeight;
-			sppBuffer[index]++;  // 依然统计 splat 次数（调试或其他用途）
+
+			sppBuffer[index]++;
 		}
-		// Code to splat a smaple with colour L into the image plane using an ImageFilter
+
+		// 3. 实时生成平均值 → 写入 colourBuffer（float*）
+		for (int i = 0; i < used; i++) {
+			int index = indices[i];
+			int pixelIndex = index * 3;
+			float w = std::max(0.0001f, weightBuffer[index]); // 防止除0
+
+			// 👇 当前像素平均颜色（提供给 OIDN）
+			colourBuffer[pixelIndex + 0] = film[index].r / w;
+			colourBuffer[pixelIndex + 1] = film[index].g / w;
+			colourBuffer[pixelIndex + 2] = film[index].b / w;
+		}
 	}
+
+	void AOV(int x, int y, const Colour& albedo, const Vec3& normal) {
+		if (x < 0 || x >= (int)width || y < 0 || y >= (int)height)
+			return;
+		int index = (y * width + x) * 3;
+
+		albedoBuffer[index + 0] = albedo.r;
+		albedoBuffer[index + 1] = albedo.g;
+		albedoBuffer[index + 2] = albedo.b;
+
+		normalBuffer[index + 0] = normal.x;
+		normalBuffer[index + 1] = normal.y;
+		normalBuffer[index + 2] = normal.z;
+	}
+
 	void tonemap(int x, int y, unsigned char& r, unsigned char& g, unsigned char& b, float exposure = 1.0f)
 		//普通伽马校正方法
 	{
 		int idx = y * width + x;
-		float totalWeight = std::max(0.0001f, weightBuffer[idx]);
-		// 使用累计贡献除以累计权重得到平均颜色
-		Colour pixel = film[idx] * (exposure / totalWeight);
+		Colour pixel;
+		if (SPP > 20) {
+			pixel.r = outputBuffer[idx * 3 + 0];
+			pixel.g = outputBuffer[idx * 3 + 1];
+			pixel.b = outputBuffer[idx * 3 + 2];
+		}
+		else {
+			float totalWeight = std::max(0.0001f, weightBuffer[idx]);
+		    // 使用累计贡献除以累计权重得到平均颜色
+		    pixel = film[idx] * (exposure / totalWeight);
+		}
+		//float totalWeight = std::max(0.0001f, weightBuffer[idx]);
+		//// 使用累计贡献除以累计权重得到平均颜色
+		//pixel = film[idx] * (exposure / totalWeight);
+
 		r = std::min(powf(std::max(pixel.r, 0.0f), 1.0f / 2.2f) * 255, 255.0f);
 		g = std::min(powf(std::max(pixel.g, 0.0f), 1.0f / 2.2f) * 255, 255.0f);
 		b = std::min(powf(std::max(pixel.b, 0.0f), 1.0f / 2.2f) * 255, 255.0f);
@@ -314,6 +368,10 @@ public:
 		film = new Colour[width * height];
 		weightBuffer = new float[width * height];
 		sppBuffer = new int[width * height];
+		albedoBuffer = new float[width * height * 3];
+		normalBuffer = new float[width * height * 3];
+		outputBuffer = new float[width * height * 3];
+		colourBuffer = new float[width * height * 3];
 		clear();
 		filter = _filter;
 	}
@@ -322,6 +380,10 @@ public:
 		memset(film, 0, width * height * sizeof(Colour));
 		memset(weightBuffer, 0, width * height * sizeof(float));
 		memset(sppBuffer, 0, width * height * sizeof(int));
+		memset(albedoBuffer, 0, width * height * 3 * sizeof(float));
+		memset(normalBuffer, 0, width * height * 3 * sizeof(float));
+		memset(outputBuffer, 0, width * height * 3 * sizeof(float));
+		memset(colourBuffer, 0, width * height * 3 * sizeof(float));
 		SPP = 0;
 	}
 	void incrementSPP()
@@ -340,3 +402,37 @@ public:
 		delete[] hdrpixels;
 	}
 };
+
+void DenoiseFilm(Film* film)
+{
+	// 创建默认 CPU 设备（OIDN v2 默认不带参数）
+	oidn::DeviceRef device = oidn::newDevice();
+	device.commit();
+
+	// 计算图像大小（单位：字节，RGB 3 通道）
+	size_t imageSize = film->width * film->height * 3 * sizeof(float);
+
+	// 分别为 color, albedo, normal, output 分配设备缓冲区
+	oidn::BufferRef colorBuf = device.newBuffer(imageSize);
+	oidn::BufferRef albedoBuf = device.newBuffer(imageSize);
+	oidn::BufferRef normalBuf = device.newBuffer(imageSize);
+	oidn::BufferRef outputBuf = device.newBuffer(imageSize);
+
+	// 将 CPU 内存中的数据拷贝到设备缓冲区
+	memcpy(colorBuf.getData(), film->colourBuffer, imageSize);
+	memcpy(albedoBuf.getData(), film->albedoBuffer, imageSize);
+	memcpy(normalBuf.getData(), film->normalBuffer, imageSize);
+
+	// 创建 OIDN RT 类型滤镜
+	oidn::FilterRef filter = device.newFilter("RT");
+	filter.setImage("color", colorBuf, oidn::Format::Float3, film->width, film->height);
+	filter.setImage("albedo", albedoBuf, oidn::Format::Float3, film->width, film->height);
+	filter.setImage("normal", normalBuf, oidn::Format::Float3, film->width, film->height);
+	filter.setImage("output", outputBuf, oidn::Format::Float3, film->width, film->height);
+	filter.set("hdr", true);
+	filter.commit();
+	filter.execute();
+
+	// 将设备中处理后的降噪结果拷贝回 CPU 的 outputBuffer
+	memcpy(film->outputBuffer, outputBuf.getData(), imageSize);
+}

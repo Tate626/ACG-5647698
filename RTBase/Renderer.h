@@ -106,11 +106,13 @@ public:
 	}
 	//canhitlight用于判断能否命中光源
 	//这个是直接光加上间接光
-	Colour pathTrace(Ray& r, Colour& pathThroughput, int depth, Sampler* sampler, bool canHitLight = true)
+	Colour pathTrace(Ray& r, Colour& pathThroughput, int depth, Sampler* sampler,Colour& a, Vec3& N, bool canHitLight = true)
 	{
 		//摄像机发出的光线r遍历场景，得到相交点
 		IntersectionData intersection = scene->traverse(r);
 		ShadingData shadingData = scene->calculateShadingData(intersection, r);
+		N = shadingData.sNormal.normalize();
+
 		//如果确实命中
 		if (shadingData.t < FLT_MAX)
 		{
@@ -153,11 +155,11 @@ public:
 			//bsdf = shadingData.bsdf->evaluate(shadingData, wi);
 			Colour indirect;
 			float pdf;
-			Vec3 wi = shadingData.bsdf->sample(shadingData, sampler, indirect, pdf);
+			Vec3 wi = shadingData.bsdf->sample(shadingData, sampler, indirect, pdf,a);
 			//这里递归调用了这个方法，以这个交点当相机再次射线，模拟一次光线反射
 			pathThroughput = pathThroughput * indirect * fabsf(Dot(wi, shadingData.sNormal)) / pdf;
 			r.init(shadingData.x + (wi * EPSILON), wi);
-			return (direct + pathTrace(r, pathThroughput, depth + 1, sampler, shadingData.bsdf->isPureSpecular()));
+			return (direct + pathTrace(r, pathThroughput, depth + 1, sampler, a, N,shadingData.bsdf->isPureSpecular()));
 		}
 		//没打到，返回背景材质
 		return scene->background->evaluate(shadingData, r.dir);
@@ -339,8 +341,11 @@ public:
 
 							Ray ray = scene->camera.generateRay(px, py);
 							Colour pathThroughput(1.0f, 1.0f, 1.0f);
-							Colour col = pathTrace(ray, pathThroughput, 0, &samplers[threadId]);
+							Colour A;
+							Vec3 N;
+							Colour col = pathTrace(ray, pathThroughput, 0, &samplers[threadId],A,N);
 							film->splat(px, py, col);
+							film->AOV(int(px),int(py),A,N);
 						}
 					}
 				}
@@ -367,6 +372,8 @@ public:
 		{
 			worker.join();
 		}
+
+		DenoiseFilm(film);
 
 		for (int y = 0; y < film->height; ++y)
 		{

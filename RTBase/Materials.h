@@ -164,7 +164,7 @@ class BSDF
 {
 public:
 	Colour emission;
-	virtual Vec3 sample(const ShadingData& shadingData, Sampler* sampler, Colour& reflectedColour, float& pdf) = 0;
+	virtual Vec3 sample(const ShadingData& shadingData, Sampler* sampler, Colour& reflectedColour, float& pdf, Colour& a) = 0;
 	virtual Colour evaluate(const ShadingData& shadingData, const Vec3& wi) = 0;
 	virtual float PDF(const ShadingData& shadingData, const Vec3& wi) = 0;
 	virtual bool isPureSpecular() = 0;
@@ -194,12 +194,13 @@ public:
 	{
 		albedo = _albedo;
 	}
-	Vec3 sample(const ShadingData& shadingData, Sampler* sampler, Colour& reflectedColour, float& pdf)
+	Vec3 sample(const ShadingData& shadingData, Sampler* sampler, Colour& reflectedColour, float& pdf, Colour& a)
 	{
 		// Add correct sampling code here
 		Vec3 wi = SamplingDistributions::cosineSampleHemisphere(sampler->next(),sampler->next());
 		pdf = wi.z/M_PI;
-		reflectedColour = albedo->sample(shadingData.tu, shadingData.tv) / M_PI;
+		a = albedo->sample(shadingData.tu, shadingData.tv);
+		reflectedColour = a/ M_PI;
 		wi = shadingData.frame.toWorld(wi);
 		return wi;
 	}
@@ -237,14 +238,15 @@ public:
 	{
 		albedo = _albedo;
 	}
-	Vec3 sample(const ShadingData& shadingData, Sampler* sampler, Colour& reflectedColour, float& pdf)
+	Vec3 sample(const ShadingData& shadingData, Sampler* sampler, Colour& reflectedColour, float& pdf, Colour& a)
 	{
 		// Replace this with Mirror sampling code
 		Vec3 wo = shadingData.frame.toLocal(shadingData.wo);
 		Vec3 wi = Vec3(-wo.x, -wo.y, wo.z);
 		float cosTheta = std::abs(Dot(wi,shadingData.gNormal));
 		wi = shadingData.frame.toWorld(wi);
-		reflectedColour = albedo->sample(shadingData.tu, shadingData.tv);
+		a= albedo->sample(shadingData.tu, shadingData.tv);
+		reflectedColour = a;
 		pdf = 1.0f;
 		return wi;
 	}
@@ -287,7 +289,7 @@ public:
 		k = _k;
 		alpha = 1.62142f * sqrtf(roughness);
 	}
-	Vec3 sample(const ShadingData& shadingData, Sampler* sampler, Colour& reflectedColour, float& pdf)
+	Vec3 sample(const ShadingData& shadingData, Sampler* sampler, Colour& reflectedColour, float& pdf, Colour& a)
 	{
 		// Replace this with Conductor sampling code
 		Vec3 woLocal = shadingData.frame.toLocal(shadingData.wo);
@@ -321,9 +323,9 @@ public:
 		Colour F = ShadingHelper::fresnelConductor(cosThetaH, eta, k);
 
 		//光照贡献
-		Colour base = albedo->sample(shadingData.tu, shadingData.tv);
+		a = albedo->sample(shadingData.tu, shadingData.tv);
 		float denom = fabs(wiLocal.z * woLocal.z);
-		reflectedColour = F * base * D * G /(4 * denom);
+		reflectedColour = F * a * D * G /(4 * denom);
 
 		// PDF 计算
 		float temp = fabs(Dot(wiLocal, h));
@@ -413,7 +415,7 @@ public:
 		intIOR = _intIOR;
 		extIOR = _extIOR;
 	}
-	Vec3 sample(const ShadingData& shadingData, Sampler* sampler, Colour& reflectedColour, float& pdf)
+	Vec3 sample(const ShadingData& shadingData, Sampler* sampler, Colour& reflectedColour, float& pdf, Colour& a)
 	{
 		// Replace this with Glass sampling code
 		Vec3 woLocal = shadingData.frame.toLocal(shadingData.wo);
@@ -432,7 +434,8 @@ public:
 		{
 			// 反射
 			wiLocal = Vec3(-woLocal.x, -woLocal.y, woLocal.z);
-			reflectedColour = albedo->sample(shadingData.tu, shadingData.tv) * fresnel;
+			a = albedo->sample(shadingData.tu, shadingData.tv);
+			reflectedColour = a * fresnel;
 			pdf = fresnel;
 		}
 		else
@@ -443,14 +446,16 @@ public:
 			{
 				// 如果是全反射
 				wiLocal = Vec3(-woLocal.x, -woLocal.y, woLocal.z);
-				reflectedColour = albedo->sample(shadingData.tu, shadingData.tv);
+				a= albedo->sample(shadingData.tu, shadingData.tv);
+				reflectedColour = a;
 				pdf = 1.0f;
 				return shadingData.frame.toWorld(wiLocal);
 			}
 
 			//
 			float scale = (eta * eta);
-			reflectedColour = albedo->sample(shadingData.tu, shadingData.tv) * scale * (1.0f - fresnel);
+			a = albedo->sample(shadingData.tu, shadingData.tv);
+			reflectedColour = a * scale * (1.0f - fresnel);
 			pdf = 1.0f - fresnel;
 		}
 
@@ -576,7 +581,7 @@ public:
 	}
 
 	// 采样函数：同时采样反射和透射分支
-	Vec3 sample(const ShadingData& shadingData, Sampler* sampler, Colour& reflectedColour, float& pdf)
+	Vec3 sample(const ShadingData& shadingData, Sampler* sampler, Colour& reflectedColour, float& pdf, Colour& a)
 	{
 		Vec3 wo = shadingData.wo; // 出射方向（局部空间）
 		// 从 GGX 分布采样半角向量 m
@@ -599,7 +604,8 @@ public:
 			float D = ShadingHelper::Dggx(m, alpha);
 			float G = ShadingHelper::Gggx(wo, wi, alpha);
 			float brdf = F * D * G / (4.0f * fabs(wo.z) * fabs(wi.z));
-			reflectedColour = albedo->sample(shadingData.tu, shadingData.tv) * brdf;
+			a = albedo->sample(shadingData.tu, shadingData.tv);
+			reflectedColour = a * brdf;
 			return wi;
 		}
 		else
@@ -617,7 +623,8 @@ public:
 				float D = ShadingHelper::Dggx(m, alpha);
 				float G = ShadingHelper::Gggx(wo, wi, alpha);
 				float brdf = F * D * G / (4.0f * fabs(wo.z) * fabs(wi.z));
-				reflectedColour = albedo->sample(shadingData.tu, shadingData.tv) * brdf;
+				a = albedo->sample(shadingData.tu, shadingData.tv);
+				reflectedColour = a * brdf;
 				return wi;
 			}
 			float cosThetaI = std::sqrt(1.0f - sin2ThetaI);
@@ -716,7 +723,7 @@ public:
 		albedo = _albedo;
 		sigma = _sigma;
 	}
-	Vec3 sample(const ShadingData& shadingData, Sampler* sampler, Colour& reflectedColour, float& pdf)
+	Vec3 sample(const ShadingData& shadingData, Sampler* sampler, Colour& reflectedColour, float& pdf, Colour& a)
 	{
 		// Replace this with OrenNayar sampling code
 		Vec3 wi = SamplingDistributions::cosineSampleHemisphere(sampler->next(), sampler->next());
@@ -769,7 +776,7 @@ public:
 	{
 		return (2.0f / SQ(std::max(alpha, 0.001f))) - 2.0f;
 	}
-	Vec3 sample(const ShadingData& shadingData, Sampler* sampler, Colour& reflectedColour, float& pdf)
+	Vec3 sample(const ShadingData& shadingData, Sampler* sampler, Colour& reflectedColour, float& pdf, Colour& a)
 	{
 		//// Replace this with Plastic sampling code
 		Vec3 woLocal = shadingData.frame.toLocal(shadingData.wo);
@@ -813,13 +820,15 @@ public:
 			float dotWRWi = std::max(0.0f, Dot(wr, wiLocal));
 			pdf = fresnel * (exponent + 1.0f) / (2.0f * M_PI) * pow(dotWRWi, exponent);
 			float phongEval = (exponent + 2.0f) / (2.0f * M_PI) * pow(dotWRWi, exponent);
-			reflectedColour = albedo->sample(shadingData.tu, shadingData.tv) * phongEval;
+			a = albedo->sample(shadingData.tu, shadingData.tv);
+			reflectedColour = a * phongEval;
 		}
 		else {
 			//漫反射
 			wiLocal = SamplingDistributions::cosineSampleHemisphere(sampler->next(), sampler->next());
 			pdf = (1- fresnel)*wiLocal.z / M_PI;
-			reflectedColour = albedo->sample(shadingData.tu, shadingData.tv) / (M_PI);
+			a = albedo->sample(shadingData.tu, shadingData.tv);
+			reflectedColour = a / (M_PI);
 		}
 		return shadingData.frame.toWorld(wiLocal);
 	}
@@ -920,10 +929,10 @@ public:
 		intIOR = _intIOR;
 		extIOR = _extIOR;
 	}
-	Vec3 sample(const ShadingData& shadingData, Sampler* sampler, Colour& reflectedColour, float& pdf)
+	Vec3 sample(const ShadingData& shadingData, Sampler* sampler, Colour& reflectedColour, float& pdf, Colour& a)
 	{
 		// Add code to include layered sampling
-		return base->sample(shadingData, sampler, reflectedColour, pdf);
+		return base->sample(shadingData, sampler, reflectedColour, pdf,a);
 	}
 	Colour evaluate(const ShadingData& shadingData, const Vec3& wi)
 	{
