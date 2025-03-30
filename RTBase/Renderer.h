@@ -146,7 +146,7 @@ public:
 			//不是光，说明是物体，返回一个方向的颜色，一样乘衰减率
 			Colour direct = pathThroughput * computeDirect(shadingData, sampler);
 			//判断光的弹射次数，达标就返回
-			if (depth > 5)
+			if (depth >8)
 			{
 				return direct;
 			}
