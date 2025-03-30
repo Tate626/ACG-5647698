@@ -66,23 +66,33 @@ public:
 		float pdf;
 		Colour emitted;
 		Vec3 p = light->sample(shadingData, sampler, emitted, pdf);
+
+		Vec3 wi;
+		float GTerm = 0.0f;
 		//判断类型
 		if (light->isArea())
 		{
 			// Calculate GTerm
 			//wi就是入射方向
-			Vec3 wi = p - shadingData.x;
+			wi = p - shadingData.x;
 			float l = wi.lengthSq();
 			wi = wi.normalize();
 			//计算几何项gterm，用于后续光照计算
-			float GTerm = (max(Dot(wi, shadingData.sNormal), 0.0f) * max(-Dot(wi, light->normal(shadingData, wi)), 0.0f)) / l;
+			GTerm = (max(Dot(wi, shadingData.sNormal), 0.0f) * max(-Dot(wi, light->normal(shadingData, wi)), 0.0f)) / l;
 			if (GTerm > 0)
 			{
 				// Trace，可见性判断，是否被阻挡
 				if (scene->visible(shadingData.x, p))
 				{
+					// 计算 BSDF 对这个方向的 pdf
+					float bsdf_pdf = shadingData.bsdf->PDF(shadingData, wi);
+					// 光源采样的 pdf：结合采样光源和采样点的概率
+					float light_pdf = pmf * pdf;
+					// 计算 MIS 权重（加个小量防止除0）
+					float misWeight = light_pdf / (light_pdf + bsdf_pdf + 1e-6f);
 					// Shade，计算这一方向的渲染效果
-					return shadingData.bsdf->evaluate(shadingData, wi) * emitted * GTerm / (pmf * pdf);
+					//return shadingData.bsdf->evaluate(shadingData, wi) * emitted * GTerm / (pmf * pdf);
+					return shadingData.bsdf->evaluate(shadingData, wi) * emitted * GTerm * misWeight / light_pdf;
 				}
 			}
 		}
@@ -97,8 +107,12 @@ public:
 				// Trace
 				if (scene->visible(shadingData.x, shadingData.x + (p * 10000.0f)))
 				{
+					float bsdf_pdf = shadingData.bsdf->PDF(shadingData, wi);
+					float light_pdf = pmf * pdf;
+					float misWeight = light_pdf / (light_pdf + bsdf_pdf + 1e-6f);
+					return shadingData.bsdf->evaluate(shadingData, wi) * emitted * GTerm * misWeight / light_pdf;
 					// Shade
-					return shadingData.bsdf->evaluate(shadingData, wi) * emitted * GTerm / (pmf * pdf);
+					//return shadingData.bsdf->evaluate(shadingData, wi) * emitted * GTerm / (pmf * pdf);
 				}
 			}
 		}
@@ -159,6 +173,7 @@ public:
 			//这里递归调用了这个方法，以这个交点当相机再次射线，模拟一次光线反射
 			pathThroughput = pathThroughput * indirect * fabsf(Dot(wi, shadingData.sNormal)) / pdf;
 			r.init(shadingData.x + (wi * EPSILON), wi);
+			// 递归调用 pathTrace 来计算间接光照（反射/折射后采样的贡献）
 			return (direct + pathTrace(r, pathThroughput, depth + 1, sampler, a, N,shadingData.bsdf->isPureSpecular()));
 		}
 		//没打到，返回背景材质
