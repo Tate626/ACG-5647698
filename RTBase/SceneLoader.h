@@ -284,7 +284,7 @@ Scene* loadScene(std::string sceneName)
 		background = new EnvironmentMap(env);
 	} else
 	{
-		background = new BackgroundColour(Colour(0.0f, 0.0f, 0.0f));
+		background = new BackgroundColour(Colour(0.2f, 0.3f, 0.4f));
 	}
 	scene->init(meshTriangles, meshMaterials, background);
 	viewcamera.movespeed = (scene->bounds.max - scene->bounds.min).length() * 0.05f;
