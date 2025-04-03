@@ -341,7 +341,7 @@ public:
 	{
 		int idx = y * width + x;
 		Colour pixel;
-		if (SPP > 20) {
+		if (SPP > 20000) {
 			pixel.r = outputBuffer[idx * 3 + 0];
 			pixel.g = outputBuffer[idx * 3 + 1];
 			pixel.b = outputBuffer[idx * 3 + 2];
