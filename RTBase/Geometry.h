@@ -118,7 +118,6 @@ public:
 		float r1 = sampler->next();
 		float r2 = sampler->next();
 
-		// 根据 Barycentric 坐标对三角形进行采样
 		float sqrtr1 = sqrt(r1);
 		float dV1 = 1.0f - sqrtr1;
 		float dV2 = r2 * sqrtr1;
@@ -278,115 +277,6 @@ struct IntersectionData
 	float gamma;
 };
 
-#define MAXNODE_TRIANGLES 8
-#define TRAVERSE_COST 1.0f
-#define TRIANGLE_COST 2.0f
-#define BUILD_BINS 32
-
-//class BVHNode {
-//public:
-//	AABB bounds;
-//	BVHNode* l = nullptr;
-//	BVHNode* r = nullptr;
-//	int startIndex = 0;
-//	int endIndex = 0;
-//
-//	static AABB triangleBounds(const Triangle& tri) {
-//		AABB box;
-//		box.reset();
-//		box.extend(tri.vertices[0].p);
-//		box.extend(tri.vertices[1].p);
-//		box.extend(tri.vertices[2].p);
-//		return box;
-//	}
-//
-//	void build(std::vector<Triangle>& inputTriangles, std::vector<Triangle>& outputTriangles) {
-//		// 正确复制 input → output，一切都在 outputTriangles 上构建
-//		outputTriangles = inputTriangles;
-//		buildRecursive(outputTriangles, 0, static_cast<int>(outputTriangles.size()));
-//	}
-//
-//	void buildRecursive(std::vector<Triangle>& triangles, int start, int end) {
-//		startIndex = start;
-//		endIndex = end;
-//
-//		bounds.reset();
-//		for (int i = start; i < end; i++) {
-//			bounds.extend(triangles[i]);
-//		}
-//
-//		int numTriangles = end - start;
-//		if (numTriangles <= MAXNODE_TRIANGLES) return;
-//
-//		Vec3 extent = bounds.max - bounds.min;
-//		int axis = 0;
-//		if (extent.y > extent.x && extent.y > extent.z) axis = 1;
-//		else if (extent.z > extent.x && extent.z > extent.y) axis = 2;
-//
-//		std::nth_element(triangles.begin() + start, triangles.begin() + (start + end) / 2, triangles.begin() + end,
-//			[axis](const Triangle& a, const Triangle& b) {
-//				float ca = (axis == 0) ? a.centre().x : (axis == 1) ? a.centre().y : a.centre().z;
-//				float cb = (axis == 0) ? b.centre().x : (axis == 1) ? b.centre().y : b.centre().z;
-//				return ca < cb;
-//			});
-//
-//		int mid = (start + end) / 2;
-//		l = new BVHNode();
-//		r = new BVHNode();
-//		l->buildRecursive(triangles, start, mid);
-//		r->buildRecursive(triangles, mid, end);
-//	}
-//
-//	void traverse(const Ray& ray, const std::vector<Triangle>& triangles, IntersectionData& intersection) {
-//		float tBox;
-//		if (!bounds.rayAABB(ray, tBox)) return;
-//
-//		if (!l && !r) {
-//			for (int i = startIndex; i < endIndex; i++) {
-//				float t, u, v;
-//				if (triangles[i].rayIntersect(ray, t, u, v) && t < intersection.t) {
-//					intersection.t = t;
-//					intersection.alpha = 1.0f - u - v;
-//					intersection.beta = u;
-//					intersection.gamma = v;
-//					intersection.ID = i;
-//				}
-//			}
-//			return;
-//		}
-//
-//		if (l) l->traverse(ray, triangles, intersection);
-//		if (r) r->traverse(ray, triangles, intersection);
-//	}
-//
-//	IntersectionData traverse(const Ray& ray, const std::vector<Triangle>& triangles) {
-//		IntersectionData intersection;
-//		intersection.t = FLT_MAX;
-//		intersection.ID = -1;
-//		traverse(ray, triangles, intersection);
-//		return intersection;
-//	}
-//
-//	bool traverseVisible(const Ray& ray, const std::vector<Triangle>& triangles, float maxT) {
-//		float tBox;
-//		//if (!bounds.rayAABB(ray, tBox) || tBox > maxT) return true;
-//		if (!bounds.rayAABB(ray, tBox)) return true;
-//		if (!l && !r) {
-//			for (int i = startIndex; i < endIndex; i++) {
-//				float t, u, v;
-//				if (triangles[i].rayIntersect(ray, t, u, v) && t < maxT) {
-//					return false;
-//				}
-//			}
-//			return true;
-//		}
-//
-//		bool left = l ? l->traverseVisible(ray, triangles, maxT) : true;
-//		bool right = r ? r->traverseVisible(ray, triangles, maxT) : true;
-//		return left && right;
-//	}
-//};
-
 
 class BVHNode
 {
@@ -416,7 +306,7 @@ public:
 	void build(std::vector<Triangle>& inputTriangles, std::vector<Triangle>& triangles)
 	{
 		// 如果是叶子节点
-		if (inputTriangles.size() <= MAXNODE_TRIANGLES) {
+		if (inputTriangles.size() <= 8) {
 			isLeaf = true;
 			offset = (unsigned int)triangles.size();  // 设置三角形的起始索引
 			num = (unsigned char)inputTriangles.size();

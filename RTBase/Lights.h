@@ -239,7 +239,7 @@ public:
 	}
 };
 
-//#define ENV_SCALE 0.13f  // ✅ 控制环境图亮度缩放（你可以随时调）
+//#define ENV_SCALE 0.03f  // ✅ 控制环境图亮度缩放（你可以随时调）
 //class EnvironmentMap : public Light
 //{
 //public:
