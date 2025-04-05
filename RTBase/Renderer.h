@@ -62,6 +62,7 @@ public:
 	}
 
 	//Used for path tracing: computeDirect  pathTrace  direct.
+	
 	//计算传入的空间中一点在随机一入射方向上的渲染结果，但是只计算能射到光源的入射方向，
 	//也就是说只计算已有光源，且能直接照射到此点的一条光线
 	//不包括反射效果，只计算了一个方向，取样时也是直接取已有光源，Next Event Estimation(nee)
@@ -217,6 +218,7 @@ public:
 
 
 	//Used for Instant Radiosity: VPLTracePath  traceVPLs  computeForPixel.
+	
 	const size_t MAX_VPLS = 100;//Limit the max number of VPLs
 	//This method simulates the path of a single light ray and generates a VPL at each intersection point.
 	void VPLTracePath(Ray& r, Colour pathThroughput, Colour Le, Sampler* sampler, int depth) {
@@ -417,97 +419,112 @@ public:
 
 
 	//Used for light tracing: connectToCamera  lightTracePath  lightTrace.
-	//用于检测输入点p是否在摄像机视线范围内
+	
+	//This method is used to accumulate the colour of the given point into the film.
 	void connectToCamera(const Vec3& p, const Vec3& n, const Colour& col) {
+		//check visible
+		if (!scene->visible(p, scene->camera.origin)) {
+			return;
+		}
 		float x, y;
-		//将 3D 点 p 投影到图像平面上
 		if (scene->camera.projectOntoCamera(p, x, y)) {
-			
-			// 计算最终颜色
-			Vec3 toCamera = (scene->camera.origin - p).normalize();
+			//compute the colour
+			Vec3 toCamera = (p - scene->camera.origin).normalize();
 			float cosTheta = Dot(scene->camera.viewDirection, toCamera);
-
-			//cosTheta = max(cosTheta, 0.01f);
-			//if (cosTheta <= 0.0f) return; // 背对相机，不可见
-			//float distanceSquared = (scene->camera.origin - p).lengthSq();
-			//float We = cosTheta / (scene->camera.Afilm * distanceSquared * pow(cosTheta, 3));
 			float We = 1.0f / (scene->camera.Afilm * pow(cosTheta, 4));
 			Colour finalContribution = col*We;
-			
-			//调用splat累计贡献
-			film->splat(static_cast<int>(x), static_cast<int>(y), finalContribution);
+			//add contributions
+			film->splatforlight(int(x),int(y), finalContribution);
 		}
 	}
-    //传入光线遍历场景，相交调用connect，再递归反射
+    //This method simulates the light transport process of the given ray.
 	void lightTracePath(Ray& r, Colour pathThroughput, int depth, Colour Le, Sampler* sampler, Colour& a, Vec3& N) {
 		IntersectionData intersection = scene->traverse(r);
 		ShadingData shadingData = scene->calculateShadingData(intersection, r);
 		N = shadingData.sNormal.normalize();
-		//如果确实命中
 		if (shadingData.t < FLT_MAX)
 		{
-			float cos = Dot(shadingData.sNormal, shadingData.wo);
-			if (cos <= 0.0f) return;
-
-	/*		Colour f_cam = shadingData.bsdf->evaluate(shadingData, shadingData.wo);
-			Colour finalCol = pathThroughput * f_cam * Le * cos;*/
-			Vec3 toCamera = (scene->camera.origin - shadingData.x).normalize();
-			Colour f_cam = shadingData.bsdf->evaluate(shadingData, toCamera);
-			Colour finalCol = pathThroughput * f_cam * Le;
-			// 1. 连接相机
-			connectToCamera(shadingData.x, shadingData.sNormal, finalCol);
-
-			// 2. 采样 BSDF 新方向
-			float pdf;
-			Colour f;
-			Vec3 wi = shadingData.bsdf->sample(shadingData, sampler, f, pdf, a);
-
-			float cosTheta = Dot(wi, shadingData.sNormal);
-			if (pdf <= 0.0f || cosTheta <= 0.0f) return;
-
-			//判断光的弹射次数，达标就返回
 			if (depth > 8)
 			{
 				return;
 			}
-			// 4. 更新 pathThroughput（PPT公式：BSDF × cosθ / pdf）
-			pathThroughput = pathThroughput * f * cosTheta / pdf;
-
-			// 5. 构建新 Ray 并递归（PPT的“Goto 1”）
+			//if it is a mirror, return
+			if (shadingData.bsdf->isPureSpecular() == true)
+			{
+				return;
+			}
+			//if it is a light, return the emission of the light
+			if (shadingData.bsdf->isLight())
+			{
+				Colour emit = shadingData.bsdf->emission;
+				connectToCamera(shadingData.x, shadingData.sNormal,emit);
+				return;
+			}
+			//call connectToCamera to add the colour of this point
+			float cos = Dot(shadingData.sNormal, shadingData.wo);
+			if (cos <= 0.0f) return;
+			Vec3 toCamera = (scene->camera.origin - shadingData.x).normalize();
+			Colour f_cam = shadingData.bsdf->evaluate(shadingData, toCamera);
+			Colour finalCol = pathThroughput * f_cam * Le;
+			connectToCamera(shadingData.x, shadingData.sNormal, finalCol);
+			//Recursively call to simulate light transport.
+			float pdf;
+			Colour f;
+			Vec3 wi = shadingData.bsdf->sample(shadingData, sampler, f, pdf, a);
+			float cosT = Dot(wi, shadingData.sNormal);
+			if (pdf <= 0.0f || cosT <= 0.0f) return;
+			pathThroughput = pathThroughput * f * cosT / pdf;
 			r.init(shadingData.x + (wi * EPSILON), wi);
 			lightTracePath(r, pathThroughput, depth + 1, Le, sampler, a, N);
 			return;
 		}
-		//没打到
 		return;
 	}
-	// 入口函数：从光源发射光线开始追踪
+	//Sample a light source, create a ray, and start light tracing.
 	void lightTrace(Sampler* sampler, Colour& a, Vec3& N) {
-		//采样一个光源（Sample a light source）
+		//sample a light
 		float pmf;
 		Light* light = scene->sampleLight(sampler,pmf);
+		if (light->isENV()) {
+			//path 1: environment light
 
-		//从光源采样一个位置和一个出射方向（Sample position and direction）
-		float pdfPos, pdfDir;
-		Vec3 p, wi;
-		ShadingData temp;
-		Colour Le;
+			float pdfDir;
+			Vec3 envDir = light->sampleDirectionFromLight(sampler, pdfDir);
+			if (pdfDir <= 0.0f) return;
+			//colour
+			Colour envEmit = light->getEmitted(envDir);
+			Colour LE = envEmit / (pmf * pdfDir);
 
-		p = light->samplePositionFromLight(sampler, pdfPos); // 采样光源表面一个点
-		wi = light->sampleDirectionFromLight(sampler, pdfDir); // 从该点采样一个发射方向
+			//set a virtual origin for the environment light 
+			//different origins may produce different results in different scenes
 
-		// [PPT 第3步] 计算从该方向出射的光强（Le），再除以位置采样概率密度
-		// PPT公式：col = Le(x0 → x1) / pA(x0)
-		Le = light->evaluate(temp,-wi) / pdfPos; // 注意方向是 -wi，因为 evaluate 期望入射方向
+		    Vec3 p = scene->camera.origin - envDir * 1e6f;
+			//Vec3 p = scene->camera.origin;
 
-		//初始化路径能量为1（Path throughput）
-		Colour pathThroughput(1.0f,1.0f,1.0f);
+			Ray r;
+			r.init(p, envDir);
 
-		//构造初始光线，从光源出发
-		Ray r(p + wi * EPSILON, wi);
+			Colour pathThroughput(1.0f, 1.0f, 1.0f);
+			lightTracePath(r, pathThroughput, 0, LE, sampler, a, N);
+			return;
+		}
+		else {
+			//path 2: others light
+			float pdfPos, pdfDir;
+			Vec3 p, wi;
+			ShadingData temp;
+			Colour Le;
+			p = light->samplePositionFromLight(sampler, pdfPos);
+			wi = light->sampleDirectionFromLight(sampler, pdfDir);
+			Le = light->evaluate(temp, -wi) / pdfPos;
 
-		//调用路径追踪函数，从光源起始点开始追踪光线
-		lightTracePath(r, pathThroughput, 0, Le, sampler, a, N);
+
+			Colour pathThroughput(1.0f, 1.0f, 1.0f);
+			Ray r(p + wi * EPSILON, wi);
+
+			lightTracePath(r, pathThroughput, 0, Le, sampler, a, N);
+			return;
+		}
 	}
 
 	Colour albedo(Ray& r)
@@ -629,156 +646,156 @@ public:
 	//Using path tracing
 	//The denoiser is automatically applied after the 10th accumulated frame of the same image.
 
-	void render()
-	{
-		static const int TILE_SIZE = 32;
-		//memory the number of render
-		film->incrementSPP();
-		std::vector<std::thread> workers;
-		std::vector<Tile> tiles;
-		int numThreads = numProcs;
-		int numTilesX = (film->width + TILE_SIZE - 1) / TILE_SIZE;
-		int numTilesY = (film->height + TILE_SIZE - 1) / TILE_SIZE;
-		//initialize all tiles
-		for (int tileY = 0; tileY < numTilesY; ++tileY)
-		{
-			for (int tileX = 0; tileX < numTilesX; ++tileX)
-			{
-				Tile tile;
-				tile.tileX = tileX;
-				tile.tileY = tileY;
-				tiles.push_back(tile);
-			}
-		}
-		//compute one tile
-		auto renderTile = [&](Tile& tile, int threadId)
-			{
-				int startX = tile.tileX * TILE_SIZE;
-				int startY = tile.tileY * TILE_SIZE;
-				int endX = min(startX + TILE_SIZE, (int)film->width);
-				int endY = min(startY + TILE_SIZE, (int)film->height);
-				for (int s = 0; s < tile.targetSPP; ++s)
-				{
-					for (int y = startY; y < endY; y++)
-					{
-						for (int x = startX; x < endX; x++)
-						{
-							float px = x + samplers->next();
-							float py = y + samplers->next();
-							Ray ray = scene->camera.generateRay(px, py);
-							Colour pathThroughput(1.0f, 1.0f, 1.0f);
-							Colour A;
-							Vec3 N;
-							Colour col = pathTrace(ray, pathThroughput, 0, &samplers[threadId],A,N);
-							film->splat(px, py, col);
-							//use for denoising
-							film->AOV(int(px),int(py),A,N);
-						}
-					}
-				}
-				tile.currentSPP += tile.targetSPP;
-			};
-		//traverse all tiles
-		auto workerFunc = [&](int threadId)
-			{
-				for (size_t i = 0; i < tiles.size(); ++i)
-				{
-					if (i % numThreads == threadId)
-					{
-						renderTile(tiles[i], threadId);
-					}
-				}
-			};
-		for (int i = 0; i < numThreads; i++)
-		{
-			workers.emplace_back(workerFunc, i);
-		}
-		for (auto& worker : workers)
-		{
-			worker.join();
-		}
-		//using denoiser
-		DenoiseFilm(film);
-		//draw the scene
-		for (int y = 0; y < film->height; ++y)
-		{
-			for (int x = 0; x < film->width; ++x)
-			{
-				unsigned char r, g, b;
-				film->tonemap(x, y, r, g, b);
-				canvas->draw(x, y, r, g, b);
-			}
-		}
-	    //every 4 renders refresh
-		if (getSPP() % 4 == 0)
-		{
-			float totalVariance = 0.0f;
-			//comnpute variance
-			for (auto& tile : tiles)
-			{
-				int startX = tile.tileX * TILE_SIZE;
-				int startY = tile.tileY * TILE_SIZE;
-				int endX = min(startX + TILE_SIZE, (int)film->width);
-				int endY = min(startY + TILE_SIZE, (int)film->height);
-				int pixelCount = 0;
-				float variance = 0.0f;
-				for (int y = startY; y < endY; ++y)
-				{
-					for (int x = startX; x < endX; ++x)
-					{
-						int idx = y * film->width + x;
-						int spp = max(1, film->sppBuffer[idx]);
-						Colour E = film->film[y * film->width + x] * (1.0f / (float)spp);
-						Colour I = Colour(0.0f, 0.0f, 0.0f);
-						float weightSum = 0.0f;
-						int size = film->filter->size();
-						for (int dy = -size; dy <= size; dy++)
-						{
-							for (int dx = -size; dx <= size; dx++)
-							{
-								int nx = x + dx;
-								int ny = y + dy;
-								if (nx >= 0 && nx < film->width && ny >= 0 && ny < film->height)
-								{
-									float w = film->filter->filter(dx, dy);
-									Colour neighbor = film->film[ny * film->width + nx] * (1.0f / (float)spp);
-									I = I + neighbor * w;
-									weightSum += w;
-								}
-							}
-						}
-						float E_lum = 0.2126f * E.r + 0.7152f * E.g + 0.0722f * E.b;
-						float I_lum = 0.2126f * I.r + 0.7152f * I.g + 0.0722f * I.b;
-						float diff = E_lum - I_lum;
-						variance += diff * diff;
-						pixelCount++;
-					}
-				}
-				if (pixelCount > 1)
-					variance /= (pixelCount - 1);
-				else
-					variance = 0.0f;
-				tile.variance = variance;
-				totalVariance += variance;
-			}
-			//compute weight based on variance
-			for (auto& tile : tiles)
-			{
-				if (totalVariance > 0.0f)
-					tile.weight = tile.variance / totalVariance;
-				else
-					tile.weight = 1.0f / tiles.size();
-			}
-			//refresh all tiles
-			int totalSamplesPerFrame = film->width * film->height; 
-			for (auto& tile : tiles)
-			{
-				float tileSampleBudget = tile.weight * totalSamplesPerFrame;
-				int tileSampleCount = (int)(tileSampleBudget); 
-				tile.targetSPP = max(1, tileSampleCount / (TILE_SIZE * TILE_SIZE));
-			}
-		}
-	}
+	//void render()
+	//{
+	//	static const int TILE_SIZE = 32;
+	//	//memory the number of render
+	//	film->incrementSPP();
+	//	std::vector<std::thread> workers;
+	//	std::vector<Tile> tiles;
+	//	int numThreads = numProcs;
+	//	int numTilesX = (film->width + TILE_SIZE - 1) / TILE_SIZE;
+	//	int numTilesY = (film->height + TILE_SIZE - 1) / TILE_SIZE;
+	//	//initialize all tiles
+	//	for (int tileY = 0; tileY < numTilesY; ++tileY)
+	//	{
+	//		for (int tileX = 0; tileX < numTilesX; ++tileX)
+	//		{
+	//			Tile tile;
+	//			tile.tileX = tileX;
+	//			tile.tileY = tileY;
+	//			tiles.push_back(tile);
+	//		}
+	//	}
+	//	//compute one tile
+	//	auto renderTile = [&](Tile& tile, int threadId)
+	//		{
+	//			int startX = tile.tileX * TILE_SIZE;
+	//			int startY = tile.tileY * TILE_SIZE;
+	//			int endX = min(startX + TILE_SIZE, (int)film->width);
+	//			int endY = min(startY + TILE_SIZE, (int)film->height);
+	//			for (int s = 0; s < tile.targetSPP; ++s)
+	//			{
+	//				for (int y = startY; y < endY; y++)
+	//				{
+	//					for (int x = startX; x < endX; x++)
+	//					{
+	//						float px = x + samplers->next();
+	//						float py = y + samplers->next();
+	//						Ray ray = scene->camera.generateRay(px, py);
+	//						Colour pathThroughput(1.0f, 1.0f, 1.0f);
+	//						Colour A;
+	//						Vec3 N;
+	//						Colour col = pathTrace(ray, pathThroughput, 0, &samplers[threadId],A,N);
+	//						film->splat(px, py, col);
+	//						//use for denoising
+	//						film->AOV(int(px),int(py),A,N);
+	//					}
+	//				}
+	//			}
+	//			tile.currentSPP += tile.targetSPP;
+	//		};
+	//	//traverse all tiles
+	//	auto workerFunc = [&](int threadId)
+	//		{
+	//			for (size_t i = 0; i < tiles.size(); ++i)
+	//			{
+	//				if (i % numThreads == threadId)
+	//				{
+	//					renderTile(tiles[i], threadId);
+	//				}
+	//			}
+	//		};
+	//	for (int i = 0; i < numThreads; i++)
+	//	{
+	//		workers.emplace_back(workerFunc, i);
+	//	}
+	//	for (auto& worker : workers)
+	//	{
+	//		worker.join();
+	//	}
+	//	//using denoiser
+	//	DenoiseFilm(film);
+	//	//draw the scene
+	//	for (int y = 0; y < film->height; ++y)
+	//	{
+	//		for (int x = 0; x < film->width; ++x)
+	//		{
+	//			unsigned char r, g, b;
+	//			film->tonemap(x, y, r, g, b);
+	//			canvas->draw(x, y, r, g, b);
+	//		}
+	//	}
+	//    //every 4 renders refresh
+	//	if (getSPP() % 4 == 0)
+	//	{
+	//		float totalVariance = 0.0f;
+	//		//comnpute variance
+	//		for (auto& tile : tiles)
+	//		{
+	//			int startX = tile.tileX * TILE_SIZE;
+	//			int startY = tile.tileY * TILE_SIZE;
+	//			int endX = min(startX + TILE_SIZE, (int)film->width);
+	//			int endY = min(startY + TILE_SIZE, (int)film->height);
+	//			int pixelCount = 0;
+	//			float variance = 0.0f;
+	//			for (int y = startY; y < endY; ++y)
+	//			{
+	//				for (int x = startX; x < endX; ++x)
+	//				{
+	//					int idx = y * film->width + x;
+	//					int spp = max(1, film->sppBuffer[idx]);
+	//					Colour E = film->film[y * film->width + x] * (1.0f / (float)spp);
+	//					Colour I = Colour(0.0f, 0.0f, 0.0f);
+	//					float weightSum = 0.0f;
+	//					int size = film->filter->size();
+	//					for (int dy = -size; dy <= size; dy++)
+	//					{
+	//						for (int dx = -size; dx <= size; dx++)
+	//						{
+	//							int nx = x + dx;
+	//							int ny = y + dy;
+	//							if (nx >= 0 && nx < film->width && ny >= 0 && ny < film->height)
+	//							{
+	//								float w = film->filter->filter(dx, dy);
+	//								Colour neighbor = film->film[ny * film->width + nx] * (1.0f / (float)spp);
+	//								I = I + neighbor * w;
+	//								weightSum += w;
+	//							}
+	//						}
+	//					}
+	//					float E_lum = 0.2126f * E.r + 0.7152f * E.g + 0.0722f * E.b;
+	//					float I_lum = 0.2126f * I.r + 0.7152f * I.g + 0.0722f * I.b;
+	//					float diff = E_lum - I_lum;
+	//					variance += diff * diff;
+	//					pixelCount++;
+	//				}
+	//			}
+	//			if (pixelCount > 1)
+	//				variance /= (pixelCount - 1);
+	//			else
+	//				variance = 0.0f;
+	//			tile.variance = variance;
+	//			totalVariance += variance;
+	//		}
+	//		//compute weight based on variance
+	//		for (auto& tile : tiles)
+	//		{
+	//			if (totalVariance > 0.0f)
+	//				tile.weight = tile.variance / totalVariance;
+	//			else
+	//				tile.weight = 1.0f / tiles.size();
+	//		}
+	//		//refresh all tiles
+	//		int totalSamplesPerFrame = film->width * film->height; 
+	//		for (auto& tile : tiles)
+	//		{
+	//			float tileSampleBudget = tile.weight * totalSamplesPerFrame;
+	//			int tileSampleCount = (int)(tileSampleBudget); 
+	//			tile.targetSPP = max(1, tileSampleCount / (TILE_SIZE * TILE_SIZE));
+	//		}
+	//	}
+	//}
 
 	//This render using Instant Radiosity, other methods are same as the previous one
 
@@ -935,52 +952,47 @@ public:
 	//	}
 	//}
 
-    //	// 多线程
-//void render()
-//{
-//	film->incrementSPP();
-//	std::vector<std::thread> workers;
-//	int numThreads = numProcs;
-//
-//	// 定义每帧总路径数：可设置为图像像素数量的倍数（比如每像素发射 1 条路径）
-//	const int totalPaths = film->width * film->height;
-//	const int pathsPerThread = totalPaths / numThreads;
-//
-//	// 每个线程执行的逻辑
-//	auto workerFunc = [&](int threadId)
-//		{
-//			for (int i = 0; i < pathsPerThread; ++i)
-//			{
-//				// 使用线程 id + 局部 i 生成 sampler（或用共享采样器数组）
-//				Colour A;
-//				Vec3 N;
-//
-//				// 发射一条从光源出发的路径
-//				lightTrace(&samplers[threadId], A, N);
-//			}
-//		};
-//
-//	// 启动线程并加入
-//	for (int i = 0; i < numThreads; i++)
-//	{
-//		workers.emplace_back(workerFunc, i);
-//	}
-//	for (auto& worker : workers)
-//	{
-//		worker.join();
-//	}
-//
-//	// 后处理：降噪 + 色调映射 + 绘制
-//	for (int y = 0; y < film->height; ++y)
-//	{
-//		for (int x = 0; x < film->width; ++x)
-//		{
-//			unsigned char r, g, b;
-//			film->tonemap(x, y, r, g, b);
-//			canvas->draw(x, y, r, g, b);
-//		}
-//	}
-//}
+    //This render using	Light Tracing without adaptive sampler or denoiser
+
+    void render()
+    {
+	    film->incrementSPP();
+	    std::vector<std::thread> workers;
+	    int numThreads = numProcs;
+	    //the number of paths for one frame
+	    const int totalPaths = 1000000;
+	    //const int totalPaths = film->width * film->height;
+	    const int pathsPerThread = totalPaths / numThreads;
+	    auto workerFunc = [&](int threadId)
+		{
+			for (int i = 0; i < pathsPerThread; ++i)
+			{
+				//the sample() in bsdf need a A and N as parameter
+				//although no denoiser here, have to use A and N
+				Colour A;
+				Vec3 N;
+				//light tracing
+				lightTrace(&samplers[threadId], A, N);
+			}
+		};
+	for (int i = 0; i < numThreads; i++)
+	{
+		workers.emplace_back(workerFunc, i);
+	}
+	for (auto& worker : workers)
+	{
+		worker.join();
+	}
+	for (int y = 0; y < film->height; ++y)
+	{
+		for (int x = 0; x < film->width; ++x)
+		{
+			unsigned char r, g, b;
+			film->tonemapforlight(x, y, r, g, b);
+			canvas->draw(x, y, r, g, b);
+		}
+	}
+}
 
 	int getSPP()
 	{
