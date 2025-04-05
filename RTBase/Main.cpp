@@ -18,8 +18,8 @@ int main(int argc, char *argv[])
 	// runTests()
 	
 	// Initialize default parameters
-	//std::string sceneName = "bathroom";
-	std::string sceneName = "MaterialsScene";
+	std::string sceneName = "bathroom";
+	//std::string sceneName = "MaterialsScene";
 	//std::string sceneName = "cornell-box";
 	//std::string sceneName = "glass-of-water";
 	std::string filename = "GI.hdr";

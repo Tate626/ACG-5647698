@@ -27,8 +27,8 @@ struct VPL {
 	ShadingData shadingData;
 	Colour Le;
 	bool fromLight = false;
-	bool isEnvironment = false; // 该 VPL 是否来自环境光
-	Vec3 envDir;               // 若 isEnvironment = true，则此处记录环境光方向
+	bool isEnvironment = false; //from environment light or not
+	Vec3 envDir;               //if from environmeny light, memory the direction
 };
 
 class RayTracer
@@ -217,54 +217,41 @@ public:
 
 
 	//Used for Instant Radiosity: VPLTracePath  traceVPLs  computeForPixel.
-	const size_t MAX_VPLS = 100;
-
+	const size_t MAX_VPLS = 100;//Limit the max number of VPLs
+	//This method simulates the path of a single light ray and generates a VPL at each intersection point.
 	void VPLTracePath(Ray& r, Colour pathThroughput, Colour Le, Sampler* sampler, int depth) {
-		// 如果已有 VPL 数量足够，就直接返回
+		//stop if the number reach the max
 		if (vpls.size() >= MAX_VPLS) return;
-
-		// 如果这是环境光的 VPL，就不追踪了（可按需选择是否写这条判断）
-		// （本函数一般是追踪物体表面反弹产生的 VPL，环境光可以跳过）
-		// 你也可以把这句逻辑放在 traceVPLs 里来控制
-		// -------------------------------------
-		// if (/* 某些情况表示这是环境光 */) { return; }
-		// -------------------------------------
 
 		IntersectionData intersection = scene->traverse(r);
 		ShadingData shadingData = scene->calculateShadingData(intersection, r);
-
 		if (shadingData.t < FLT_MAX) {
 			if (depth > 5) {
 				return;
 			}
-
-			// 镜面直接返回，不用在此生成 VPL
+			// if it is a mirror,return.I use path tracing to render mirror. it can be seen in computeForPixel()
 			if (shadingData.bsdf->isPureSpecular() == true) {
 				return;
 			}
-
-			// 生成一个 VPL
+			//create a new VPL
 			if (vpls.size() < MAX_VPLS) {
 				VPL vpl;
 				vpl.shadingData = shadingData;
 				vpl.Le = pathThroughput * Le;
-				vpl.fromLight = false;      // 此处是物体反射 VPL
-				vpl.isEnvironment = false;  // 普通表面，不是环境
+				vpl.fromLight = false;
+				vpl.isEnvironment = false; 
 				vpls.push_back(vpl);
 			}
 			else {
 				return;
 			}
-
-			// 以下是继续向场景追踪，采样新的方向
+			//Recursively call to simulate light transport.
 			float pdfBSDF = 0.0f;
 			Colour bsdfVal;
 			Colour A;
 			Vec3 newDir = shadingData.bsdf->sample(shadingData, sampler, bsdfVal, pdfBSDF, A);
-
 			pathThroughput = pathThroughput * bsdfVal
 				* fabsf(Dot(newDir, shadingData.sNormal)) / pdfBSDF;
-
 			float russianRouletteProbability = min(pathThroughput.Lum(), 0.9f);
 			if (sampler->next() < russianRouletteProbability) {
 				pathThroughput = pathThroughput / russianRouletteProbability;
@@ -272,146 +259,120 @@ public:
 			else {
 				return;
 			}
-
 			r.init(shadingData.x + (newDir * EPSILON), newDir);
 			VPLTracePath(r, pathThroughput, Le, sampler, depth + 1);
 		}
 	}
-
+	//This method randomly samples and generates N_VPLs initial light source VPLs. 
+	//If the light is not an environment light, calls VPLTracePath to generate all VPLs along the path.
 	void traceVPLs(Sampler* sampler, int N_VPLs) {
 		vpls.clear();
 		vpls.reserve(MAX_VPLS);
 
+		//generate N_VPLs initial VPLs
 		for (int i = 0; i < N_VPLs; ++i) {
 			float pmf;
 			Light* light = scene->sampleLight(sampler, pmf);
 			if (pmf <= 0.0f) {
 				continue;
 			}
-
-			// ---------------------------
-			// 如果是环境光：
-			// ---------------------------
+			//distinguish environment light and other lights
 			if (light->isENV()) {
+				//sample a direction
 				float pdfDir;
 				Vec3 envDir = light->sampleDirectionFromLight(sampler, pdfDir);
-				if (pdfDir <= 0.0f) {
-					continue;
-				}
+				if (pdfDir <= 0.0f) continue;
 
-				// 该方向的环境辐射
+				//build the VPL
 				Colour envEmit = light->getEmitted(envDir);
-				// 归一化
 				Colour LE = envEmit / (pmf * pdfDir * float(N_VPLs));
-
-				// 构建一个环境 VPL
 				VPL vpl;
-				// 由于是环境光，不需要真实位置和法线
+				// environment light does not require a real position or normal.
 				vpl.shadingData.x = Vec3(0.0f, 0.0f, 0.0f);
 				vpl.shadingData.sNormal = Vec3(0.0f, 0.0f, 0.0f);
 				vpl.Le = LE;
 				vpl.fromLight = true;
-				vpl.isEnvironment = true; // 重点：标记为环境光
-				vpl.envDir = envDir;      // 记录该方向
-
+				vpl.isEnvironment = true;
+				vpl.envDir = envDir; 
 				vpls.push_back(vpl);
-
-				// 通常对环境光就到此为止，不再用 VPLTracePath 继续追踪
-				// 因为它不是一个“表面”可以再反弹
-				// 如果你要做奇巧淫技，也可再发射射线，但这里先不做。
 			}
-			// ---------------------------
-			// 如果是普通面积光或其他光：
-			// ---------------------------
+			//for other lights
 			else {
+				//sample a position
 				float pdfPosition;
 				Vec3 p = light->samplePositionFromLight(sampler, pdfPosition);
-				if (pdfPosition <= 0.0f) {
-					continue;
-				}
+				if (pdfPosition <= 0.0f) continue;
 
 				ShadingData shadingData(p, light->normal(p));
 				Colour emitted = light->getEmitted(p);
-
 				Colour LE = emitted / (pmf * pdfPosition * float(N_VPLs));
 
-				// 第一个 VPL
-				{
-					VPL vpl;
-					vpl.shadingData = shadingData;
-					vpl.Le = LE;
-					vpl.fromLight = true;
-					vpl.isEnvironment = false; // 普通表面
-					vpls.push_back(vpl);
-				}
+				//the first VPL
+				VPL vpl;
+				vpl.shadingData = shadingData;
+				vpl.Le = LE;
+				vpl.fromLight = true;
+				vpl.isEnvironment = false;
+				vpls.push_back(vpl);
 
-				// 从该光源点再采样方向
+				//generate ray from the first VPL and use VPLTracePath to get more VPLs.
 				float pdfDir;
 				Vec3 wi = light->sampleDirectionFromLight(sampler, pdfDir);
 				if (pdfDir <= 0.0f) {
 					continue;
 				}
-
 				float cosLight = Dot(wi, light->normal(p));
 				if (cosLight < 0.0f) cosLight = 0.0f;
-
 				Colour le = emitted * cosLight / (pmf * pdfPosition * pdfDir * float(N_VPLs));
-
 				Ray r;
 				r.init(shadingData.x + (wi * EPSILON), wi);
 				Colour pathThroughput(1.f, 1.f, 1.f);
-				// 这里才进入 VPLTracePath，去追踪后续反射产生的 VPL
 				VPLTracePath(r, pathThroughput, le, sampler, 0);
 			}
 		}
 	}
-
+	//For a pixel on the screen, compute the intersection to get its position in the world. 
+	//Then,traverse all VPLs and compute their color contribution to this position.
+	//The sum of these contributions is the final color seen by the camera.
 	Colour computeForPixel(Ray& r, Sampler* sampler, Colour& a, Vec3& N) {
 		Colour result(0.0f, 0.0f, 0.0f);
-
-		// 主射线求交
 		IntersectionData intersection = scene->traverse(r);
 		ShadingData shadingData = scene->calculateShadingData(intersection, r);
 		N = shadingData.sNormal.normalize();
 
+		//if hitting a light return its colour.
 		if(shadingData.bsdf!=NULL)
 		if (shadingData.bsdf->isLight()) {
 			return shadingData.bsdf->emission;
 		}
 
 		if (shadingData.t < FLT_MAX) {
-			// 如果是纯镜面，仍然用你现有的 pathTrace
+			//if it is a mirror, using path tracing
 			if (shadingData.bsdf->isPureSpecular() == true) {
 				Colour throughput(1.0f,1.0f,1.0f);
 				return pathTrace(r, throughput, 0, sampler, a, N);
 			}
 
-			// 遍历所有 VPL
+			// traverse all VPLs to get the colour of this pixel
 			for (const VPL& vpl : vpls) {
 				if (vpl.isEnvironment) {
-					// --------- 环境光 VPL 的计算 ---------
+					//path 1: environment light
 					Vec3 wi = vpl.envDir;
-					float cosTheta_hit = max(0.0f, Dot(wi, shadingData.sNormal));
-					if (cosTheta_hit < 1e-4f) {
-						continue; // 太背面，不贡献
+					float cos = max(0.0f, Dot(wi, shadingData.sNormal));
+					if (cos < 1e-4f) {
+						continue;
 					}
-
-					// 无穷远可见性检测：从当前点沿 wi 发射射线，看是否击中场景
 					Ray testRay(shadingData.x + wi * EPSILON, wi);
 					IntersectionData testIsect = scene->traverse(testRay);
-					// 若 testIsect.t 很大或没碰到物体，则视作可见环境
 					bool visibleEnv = (testIsect.t >= FLT_MAX);
-
 					if (visibleEnv) {
-						// BSDF 求值
 						Colour bsdfVal = shadingData.bsdf->evaluate(shadingData, wi);
-						// 一般乘一次 cosTheta_hit
-						Colour contrib = vpl.Le * bsdfVal * cosTheta_hit;
+						Colour contrib = vpl.Le * bsdfVal * cos;
 						result = result + contrib;
 					}
 				}
 				else {
-					// --------- 普通 VPL (面积光 or 物体反射) 的计算 ---------
+					//path 1: other lights
 					Vec3 vplPos = vpl.shadingData.x;
 					Vec3 toVPL = vplPos - shadingData.x;
 					float dist2 = Dot(toVPL, toVPL);
@@ -420,48 +381,37 @@ public:
 					}
 					Vec3 wi = toVPL.normalize();
 
-					float cosTheta_hit = max(0.0f, Dot(wi, shadingData.sNormal));
-					float cosTheta_vpl = max(0.0f, -Dot(wi, vpl.shadingData.sNormal));
-					if (cosTheta_hit < 0.1f || cosTheta_vpl < 0.1f) {
+					float cosh = max(0.0f, Dot(wi, shadingData.sNormal));
+					float cost = max(0.0f, -Dot(wi, vpl.shadingData.sNormal));
+					if (cosh < 0.1f || cost < 0.1f) {
 						continue;
 					}
-
-					float G = (cosTheta_hit * cosTheta_vpl) / (dist2 + EPSILON);
+					float G = (cosh * cost) / (dist2 + EPSILON);
 					if (G < 1e-4f) {
 						continue;
 					}
-
-					// 点到点可见性测试
 					if (!scene->visible(shadingData.x, vplPos)) {
 						continue;
 					}
-
 					Colour temp(0.0f, 0.0f, 0.0f);
 					if (vpl.fromLight) {
-						// 若是从光源直接采样的 VPL
+						// if the VPL is a light
 						temp = vpl.Le
 							* shadingData.bsdf->evaluate(shadingData, wi)
 							* G;
 					}
 					else {
-						// 若是物体反射生成的 VPL
+						// if the VPL is a bsdf
 						temp = vpl.Le
 							* vpl.shadingData.bsdf->evaluate(vpl.shadingData, -wi)
 							* shadingData.bsdf->evaluate(shadingData, wi)
 							* G;
 					}
-
-					// 你原本可能还有对 shadingData.bsdf->sample(...) 的调用
-					// 是否继续保留取决于你的需求，这里省略。
-
 					result = result + temp;
 				}
 			}
-
 			return result;
 		}
-
-		// 未击中任何几何体则返回背景
 		return scene->background->evaluate(shadingData, r.dir);
 	}
 
@@ -776,10 +726,8 @@ public:
 				{
 					for (int x = startX; x < endX; ++x)
 					{
-
 						int idx = y * film->width + x;
 						int spp = max(1, film->sppBuffer[idx]);
-
 						Colour E = film->film[y * film->width + x] * (1.0f / (float)spp);
 						Colour I = Colour(0.0f, 0.0f, 0.0f);
 						float weightSum = 0.0f;
@@ -813,7 +761,6 @@ public:
 				tile.variance = variance;
 				totalVariance += variance;
 			}
-
 			//compute weight based on variance
 			for (auto& tile : tiles)
 			{
@@ -833,17 +780,19 @@ public:
 		}
 	}
 
-	////多线程，instant版本
+	//This render using Instant Radiosity, other methods are same as the previous one
+
 	//void render()
 	//{
 	//	static const int TILE_SIZE = 32;
+	//	//memory the number of render
 	//	film->incrementSPP();
 	//	std::vector<std::thread> workers;
 	//	std::vector<Tile> tiles;
 	//	int numThreads = numProcs;
 	//	int numTilesX = (film->width + TILE_SIZE - 1) / TILE_SIZE;
 	//	int numTilesY = (film->height + TILE_SIZE - 1) / TILE_SIZE;
-	//	// 初始化所有 tile 信息
+	//	//initialize all tiles
 	//	for (int tileY = 0; tileY < numTilesY; ++tileY)
 	//	{
 	//		for (int tileX = 0; tileX < numTilesX; ++tileX)
@@ -851,13 +800,12 @@ public:
 	//			Tile tile;
 	//			tile.tileX = tileX;
 	//			tile.tileY = tileY;
-	//			// 其他字段（如 variance、weight、currentSPP、targetSPP）可以在 Tile 结构体中预置默认值
 	//			tiles.push_back(tile);
 	//		}
 	//	}
-	//	traceVPLs(samplers, 32);
-	//	//std::cout << vpls.size() << std::endl;
-	//	// 渲染每个 tile 的函数：每个像素采 INIT_SPP 个样本（此处为 1 个）
+	//	//precompute VPLs
+	//	traceVPLs(samplers, 16);
+	//	//compute one tile
 	//	auto renderTile = [&](Tile& tile, int threadId)
 	//		{
 	//			int startX = tile.tileX * TILE_SIZE;
@@ -875,15 +823,17 @@ public:
 	//						Ray ray = scene->camera.generateRay(px, py);
 	//						Colour A;
 	//						Vec3 N;
+	//						//change to ir methods
 	//						Colour col = computeForPixel(ray, &samplers[threadId],A,N);
 	//						film->splat(px, py, col);
+	//						//use for denoising
 	//						film->AOV(int(px), int(py), A, N);
 	//					}
 	//				}
 	//			}
 	//			tile.currentSPP += tile.targetSPP;
 	//		};
-	//	// 多线程遍历 tiles 数组（按 round-robin 分配）
+	//	//traverse all tiles
 	//	auto workerFunc = [&](int threadId)
 	//		{
 	//			for (size_t i = 0; i < tiles.size(); ++i)
@@ -902,7 +852,9 @@ public:
 	//	{
 	//		worker.join();
 	//	}
+	//	//using denoiser
 	//	DenoiseFilm(film);
+	//	//draw the scene
 	//	for (int y = 0; y < film->height; ++y)
 	//	{
 	//		for (int x = 0; x < film->width; ++x)
@@ -912,11 +864,11 @@ public:
 	//			canvas->draw(x, y, r, g, b);
 	//		}
 	//	}
-	//	// 每 4 帧更新一次方差（仅计算并输出调试信息）
+	//	//every 4 renders refresh
 	//	if (getSPP() % 4 == 0)
 	//	{
 	//		float totalVariance = 0.0f;
-	//		//计算方差
+	//		//comnpute variance
 	//		for (auto& tile : tiles)
 	//		{
 	//			int startX = tile.tileX * TILE_SIZE;
@@ -929,11 +881,9 @@ public:
 	//			{
 	//				for (int x = startX; x < endX; ++x)
 	//				{
-	//					//历史累计值
 	//					int idx = y * film->width + x;
-	//					int spp = max(1, film->sppBuffer[idx]); // 防止除 0
+	//					int spp = max(1, film->sppBuffer[idx]); 
 	//					Colour E = film->film[y * film->width + x] * (1.0f / (float)spp);
-	//					//高斯近似计算当前帧值
 	//					Colour I = Colour(0.0f, 0.0f, 0.0f);
 	//					float weightSum = 0.0f;
 	//					int size = film->filter->size();
@@ -966,20 +916,20 @@ public:
 	//			tile.variance = variance;
 	//			totalVariance += variance;
 	//		}
-	//		//由方差计算权重
+	//		//compute weight based on variance
 	//		for (auto& tile : tiles)
 	//		{
 	//			if (totalVariance > 0.0f)
 	//				tile.weight = tile.variance / totalVariance;
 	//			else
-	//				tile.weight = 1.0f / tiles.size(); // fallback：平均采样
+	//				tile.weight = 1.0f / tiles.size(); 
 	//		}
-	//		//调整tile结构体
+	//		//refresh all tiles
 	//		int totalSamplesPerFrame = film->width * film->height;
 	//		for (auto& tile : tiles)
 	//		{
 	//			float tileSampleBudget = tile.weight * totalSamplesPerFrame;
-	//			int tileSampleCount = (int)(tileSampleBudget); // 这是总共多少次采样
+	//			int tileSampleCount = (int)(tileSampleBudget);
 	//			tile.targetSPP = max(1, tileSampleCount / (TILE_SIZE * TILE_SIZE));
 	//		}
 	//	}
