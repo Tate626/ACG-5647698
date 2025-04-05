@@ -302,7 +302,7 @@ public:
 		if (r) delete r;
 		if (l) delete l;
 	}
-	// Note there are several options for how to implement the build method. Update this as required
+
 	void build(std::vector<Triangle>& inputTriangles, std::vector<Triangle>& triangles)
 	{
 		// 如果是叶子节点

@@ -256,7 +256,7 @@ public:
 	{
 		int idx = y * width + x;
 		Colour pixel;
-		if (SPP > 10) {
+		if (SPP > 100) {
 			//path 1：denoiser
 			pixel.r = outputBuffer[idx * 3 + 0];
 			pixel.g = outputBuffer[idx * 3 + 1];
