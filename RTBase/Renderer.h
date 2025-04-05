@@ -11,13 +11,15 @@
 #include <thread>
 #include <functional>
 
+//for adaptive sampler
 struct Tile {
+	//position
 	int tileX, tileY;
 	float variance = 0.0f;
-	//本轮权重
+	//weight
 	float weight = 1.0f;
+	//the number of sample
 	int currentSPP = 0;
-	//本轮采样数
 	int targetSPP = 1;
 };
 
@@ -58,6 +60,8 @@ public:
 	{
 		film->clear();
 	}
+
+	//Used for path tracing: computeDirect  pathTrace  direct.
 	//计算传入的空间中一点在随机一入射方向上的渲染结果，但是只计算能射到光源的入射方向，
 	//也就是说只计算已有光源，且能直接照射到此点的一条光线
 	//不包括反射效果，只计算了一个方向，取样时也是直接取已有光源，Next Event Estimation(nee)
@@ -211,7 +215,8 @@ public:
 		return Colour(0.0f, 0.0f, 0.0f);
 	}
 
-	//下面连续三个方法用于instant
+
+	//Used for Instant Radiosity: VPLTracePath  traceVPLs  computeForPixel.
 	const size_t MAX_VPLS = 100;
 
 	void VPLTracePath(Ray& r, Colour pathThroughput, Colour Le, Sampler* sampler, int depth) {
@@ -460,8 +465,8 @@ public:
 		return scene->background->evaluate(shadingData, r.dir);
 	}
 
-	//接下来三个方法用于light trace
 
+	//Used for light tracing: connectToCamera  lightTracePath  lightTrace.
 	//用于检测输入点p是否在摄像机视线范围内
 	void connectToCamera(const Vec3& p, const Vec3& n, const Colour& col) {
 		float x, y;
@@ -580,7 +585,9 @@ public:
 		return Colour(0.0f, 0.0f, 0.0f);
 	}
 
-	 //单线程版
+	//This render is a basic single-threaded version
+	//Some interfaces have been modified, so it may no longer be used.
+	 
 	//void render()
 	//{
 	//	film->incrementSPP();
@@ -607,7 +614,9 @@ public:
 	//	}
 	//}
 
-	 //多线程
+	//This render is a basic multiple-threaded version
+	//Some interfaces have been modified, so it may no longer be used.
+	
 	//void render()
 	//{
 	//	static const int TILE_SIZE = 32;
@@ -666,17 +675,21 @@ public:
 	//	}
 	//}
 
-	 //多线程，适应性采样版
+	//This render is a multiple-threaded version with adaptive sampler and denoise
+	//Using path tracing
+	//The denoiser is automatically applied after the 10th accumulated frame of the same image.
+
 	void render()
 	{
 		static const int TILE_SIZE = 32;
+		//memory the number of render
 		film->incrementSPP();
 		std::vector<std::thread> workers;
 		std::vector<Tile> tiles;
 		int numThreads = numProcs;
 		int numTilesX = (film->width + TILE_SIZE - 1) / TILE_SIZE;
 		int numTilesY = (film->height + TILE_SIZE - 1) / TILE_SIZE;
-		// 初始化所有 tile 信息
+		//initialize all tiles
 		for (int tileY = 0; tileY < numTilesY; ++tileY)
 		{
 			for (int tileX = 0; tileX < numTilesX; ++tileX)
@@ -684,11 +697,10 @@ public:
 				Tile tile;
 				tile.tileX = tileX;
 				tile.tileY = tileY;
-				// 其他字段（如 variance、weight、currentSPP、targetSPP）可以在 Tile 结构体中预置默认值
 				tiles.push_back(tile);
 			}
 		}
-		// 渲染每个 tile 的函数：每个像素采 INIT_SPP 个样本（此处为 1 个）
+		//compute one tile
 		auto renderTile = [&](Tile& tile, int threadId)
 			{
 				int startX = tile.tileX * TILE_SIZE;
@@ -709,13 +721,14 @@ public:
 							Vec3 N;
 							Colour col = pathTrace(ray, pathThroughput, 0, &samplers[threadId],A,N);
 							film->splat(px, py, col);
+							//use for denoising
 							film->AOV(int(px),int(py),A,N);
 						}
 					}
 				}
 				tile.currentSPP += tile.targetSPP;
 			};
-		// 多线程遍历 tiles 数组（按 round-robin 分配）
+		//traverse all tiles
 		auto workerFunc = [&](int threadId)
 			{
 				for (size_t i = 0; i < tiles.size(); ++i)
@@ -734,7 +747,9 @@ public:
 		{
 			worker.join();
 		}
+		//using denoiser
 		DenoiseFilm(film);
+		//draw the scene
 		for (int y = 0; y < film->height; ++y)
 		{
 			for (int x = 0; x < film->width; ++x)
@@ -744,11 +759,11 @@ public:
 				canvas->draw(x, y, r, g, b);
 			}
 		}
-		// 每 4 帧更新一次方差（仅计算并输出调试信息）
+	    //every 4 renders refresh
 		if (getSPP() % 4 == 0)
 		{
 			float totalVariance = 0.0f;
-			//计算方差
+			//comnpute variance
 			for (auto& tile : tiles)
 			{
 				int startX = tile.tileX * TILE_SIZE;
@@ -761,11 +776,11 @@ public:
 				{
 					for (int x = startX; x < endX; ++x)
 					{
-						//历史累计值
+
 						int idx = y * film->width + x;
-						int spp = max(1, film->sppBuffer[idx]); // 防止除 0
+						int spp = max(1, film->sppBuffer[idx]);
+
 						Colour E = film->film[y * film->width + x] * (1.0f / (float)spp);
-						//高斯近似计算当前帧值
 						Colour I = Colour(0.0f, 0.0f, 0.0f);
 						float weightSum = 0.0f;
 						int size = film->filter->size();
@@ -798,20 +813,21 @@ public:
 				tile.variance = variance;
 				totalVariance += variance;
 			}
-			//由方差计算权重
+
+			//compute weight based on variance
 			for (auto& tile : tiles)
 			{
 				if (totalVariance > 0.0f)
 					tile.weight = tile.variance / totalVariance;
 				else
-					tile.weight = 1.0f / tiles.size(); // fallback：平均采样
+					tile.weight = 1.0f / tiles.size();
 			}
-			//调整tile结构体
+			//refresh all tiles
 			int totalSamplesPerFrame = film->width * film->height; 
 			for (auto& tile : tiles)
 			{
 				float tileSampleBudget = tile.weight * totalSamplesPerFrame;
-				int tileSampleCount = (int)(tileSampleBudget); // 这是总共多少次采样
+				int tileSampleCount = (int)(tileSampleBudget); 
 				tile.targetSPP = max(1, tileSampleCount / (TILE_SIZE * TILE_SIZE));
 			}
 		}
@@ -969,7 +985,7 @@ public:
 	//	}
 	//}
 
-//	// 多线程
+    //	// 多线程
 //void render()
 //{
 //	film->incrementSPP();

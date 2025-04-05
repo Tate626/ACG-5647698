@@ -175,82 +175,6 @@ public:
 	}
 };
 
-//旧版，不支持自适应采样
-//class Film
-//{
-//public:
-//	film这个数组管理着累计渲染结果，splat每帧把结果存入，tomap除以spp就是累计渲染结果
-//	Colour* film;
-//	unsigned int width;//图片尺寸（分辨率）
-//	unsigned int height;
-//	int SPP;//采样次数（每个像素）
-//	ImageFilter* filter;
-//
-//	void splat(const float x, const float y, const Colour& L)
-//		计算每束光线对周围像素的影响，传入的x，y为浮点数，代表这束光线的位置
-//		使用各种filter来计算这个光线对周围像素的权重
-//	{
-//		float filterWeights[25]; // Storage to cache weights 
-//		unsigned int indices[25]; // Store indices to minimize computations 
-//		unsigned int used = 0;
-//		float total = 0;
-//		int size = filter->size();
-//		for (int i = -size; i <= size; i++) {
-//			for (int j = -size; j <= size; j++) {
-//				int px = (int)x + j;
-//				int py = (int)y + i;
-//				if (px >= 0 && px < width && py >= 0 && py < height) {
-//					indices[used] = (py * width) + px;
-//					filterWeights[used] = filter->filter(j, i);
-//					total += filterWeights[used];
-//					used++;
-//				}
-//			}
-//		}
-//		for (int i = 0; i < used; i++) {
-//			film[indices[i]] = film[indices[i]] + (L * filterWeights[i] / total);
-//		}
-//		 Code to splat a smaple with colour L into the image plane using an ImageFilter
-//	}
-//	void tonemap(int x, int y, unsigned char& r, unsigned char& g, unsigned char& b, float exposure = 1.0f)
-//		普通伽马校正方法
-//	{
-//		Colour pixel = film[y * width + x] * (exposure / (float)SPP);
-//		r = std::min(powf(std::max(pixel.r, 0.0f), 1.0f / 2.2f) * 255, 255.0f);
-//		g = std::min(powf(std::max(pixel.g, 0.0f), 1.0f / 2.2f) * 255, 255.0f);
-//		b = std::min(powf(std::max(pixel.b, 0.0f), 1.0f / 2.2f) * 255, 255.0f);
-//		 Return a tonemapped pixel at coordinates x, y
-//	}
-//	 Do not change any code below this line
-//	void init(int _width, int _height, ImageFilter* _filter)
-//	{
-//		width = _width;
-//		height = _height;
-//		film = new Colour[width * height];
-//		clear();
-//		filter = _filter;
-//	}
-//	void clear()
-//	{
-//		memset(film, 0, width * height * sizeof(Colour));
-//		SPP = 0;
-//	}
-//	void incrementSPP()
-//	{
-//		SPP++;
-//	}
-//	void save(std::string filename)
-//	{
-//		Colour* hdrpixels = new Colour[width * height];
-//		for (unsigned int i = 0; i < (width * height); i++)
-//		{
-//			hdrpixels[i] = film[i] / (float)SPP;
-//		}
-//		stbi_write_hdr(filename.c_str(), width, height, 3, (float*)hdrpixels);
-//		delete[] hdrpixels;
-//	}
-//};
-
 class Film;
 
 void DenoiseFilm(Film* film);
@@ -260,27 +184,25 @@ class Film
 public:
 	//film这个数组管理着累计渲染结果，splat每帧把结果存入，tomap除以spp就是累计渲染结果
 	Colour* film;
-	unsigned int width;//图片尺寸（分辨率）
+	unsigned int width;
 	unsigned int height;
-	int* sppBuffer;//记录每像素的实际采样数
-	float* weightBuffer;//优化sppbuffer
-	//以下三个存储用于降噪的
+	int* sppBuffer;//memory the number of sample (different tile is different)
+	float* weightBuffer;//memory the weight(different tile is different)
+	//these four buffer used for denosier
 	float* albedoBuffer;
 	float* normalBuffer;
 	float* colourBuffer;
 	float* outputBuffer;
-	int SPP;//循环帧数（每个像素）
+	int SPP;//memory the number of render(for the scene)
 	ImageFilter* filter;
 
 	void splat(const float x, const float y, const Colour& L)
 	{
-		float filterWeights[25];      // 滤波器的权重
-		unsigned int indices[25];     // 对应像素在 buffer 中的 index
+		float filterWeights[25];
+		unsigned int indices[25];
 		unsigned int used = 0;
 		float total = 0;
 		int size = filter->size();
-
-		// 1. 计算滤波器覆盖的区域 & 权重
 		for (int i = -size; i <= size; i++) {
 			for (int j = -size; j <= size; j++) {
 				int px = (int)x + j;
@@ -295,33 +217,27 @@ public:
 			}
 		}
 
-		// 2. 写入 film 累计原始值、更新权重
+		//memory extra information for adaptive sampler
 		for (int i = 0; i < used; i++) {
 			int index = indices[i];
 			float normWeight = filterWeights[i] / total;
-
-			// 👇 未平均的累计值
 			film[index] = film[index] + (L * normWeight);
-
-			// 👇 累计权重
 			weightBuffer[index] += normWeight;
-
 			sppBuffer[index]++;
 		}
 
-		// 3. 实时生成平均值 → 写入 colourBuffer（float*）
+		//memory extra information for denoising
 		for (int i = 0; i < used; i++) {
 			int index = indices[i];
 			int pixelIndex = index * 3;
-			float w = std::max(0.0001f, weightBuffer[index]); // 防止除0
+			float w = std::max(0.0001f, weightBuffer[index]);
 
-			// 👇 当前像素平均颜色（提供给 OIDN）
 			colourBuffer[pixelIndex + 0] = film[index].r / w;
 			colourBuffer[pixelIndex + 1] = film[index].g / w;
 			colourBuffer[pixelIndex + 2] = film[index].b / w;
 		}
 	}
-
+	//refresh AOV for denoiser
 	void AOV(int x, int y, const Colour& albedo, const Vec3& normal) {
 		if (x < 0 || x >= (int)width || y < 0 || y >= (int)height)
 			return;
@@ -337,28 +253,25 @@ public:
 	}
 
 	void tonemap(int x, int y, unsigned char& r, unsigned char& g, unsigned char& b, float exposure = 1.0f)
-		//普通伽马校正方法
 	{
 		int idx = y * width + x;
 		Colour pixel;
-		if (SPP > 20000) {
+		if (SPP > 10) {
+			//path 1：denoiser
 			pixel.r = outputBuffer[idx * 3 + 0];
 			pixel.g = outputBuffer[idx * 3 + 1];
 			pixel.b = outputBuffer[idx * 3 + 2];
 		}
 		else {
+			//path 2: adaptive sampler
 			float totalWeight = std::max(0.0001f, weightBuffer[idx]);
-		    // 使用累计贡献除以累计权重得到平均颜色
 		    pixel = film[idx] * (exposure / totalWeight);
 		}
-		//float totalWeight = std::max(0.0001f, weightBuffer[idx]);
-		//// 使用累计贡献除以累计权重得到平均颜色
-		//pixel = film[idx] * (exposure / totalWeight);
 
+		//tonemapp to 255 size
 		r = std::min(powf(std::max(pixel.r, 0.0f), 1.0f / 2.2f) * 255, 255.0f);
 		g = std::min(powf(std::max(pixel.g, 0.0f), 1.0f / 2.2f) * 255, 255.0f);
 		b = std::min(powf(std::max(pixel.b, 0.0f), 1.0f / 2.2f) * 255, 255.0f);
-		// Return a tonemapped pixel at coordinates x, y
 	}
 	// Do not change any code below this line
 	void init(int _width, int _height, ImageFilter* _filter)
@@ -395,7 +308,7 @@ public:
 		Colour* hdrpixels = new Colour[width * height];
 		for (unsigned int i = 0; i < (width * height); i++)
 		{
-			int spp = std::max(1, sppBuffer[i]); // 避免除以 0
+			int spp = std::max(1, sppBuffer[i]);
 			hdrpixels[i] = film[i] * (1.0f / (float)spp);
 		}
 		stbi_write_hdr(filename.c_str(), width, height, 3, (float*)hdrpixels);
@@ -405,25 +318,20 @@ public:
 
 void DenoiseFilm(Film* film)
 {
-	// 创建默认 CPU 设备（OIDN v2 默认不带参数）
 	oidn::DeviceRef device = oidn::newDevice();
 	device.commit();
 
-	// 计算图像大小（单位：字节，RGB 3 通道）
 	size_t imageSize = film->width * film->height * 3 * sizeof(float);
 
-	// 分别为 color, albedo, normal, output 分配设备缓冲区
 	oidn::BufferRef colorBuf = device.newBuffer(imageSize);
 	oidn::BufferRef albedoBuf = device.newBuffer(imageSize);
 	oidn::BufferRef normalBuf = device.newBuffer(imageSize);
 	oidn::BufferRef outputBuf = device.newBuffer(imageSize);
 
-	// 将 CPU 内存中的数据拷贝到设备缓冲区
 	memcpy(colorBuf.getData(), film->colourBuffer, imageSize);
 	memcpy(albedoBuf.getData(), film->albedoBuffer, imageSize);
 	memcpy(normalBuf.getData(), film->normalBuffer, imageSize);
 
-	// 创建 OIDN RT 类型滤镜
 	oidn::FilterRef filter = device.newFilter("RT");
 	filter.setImage("color", colorBuf, oidn::Format::Float3, film->width, film->height);
 	filter.setImage("albedo", albedoBuf, oidn::Format::Float3, film->width, film->height);
@@ -433,6 +341,5 @@ void DenoiseFilm(Film* film)
 	filter.commit();
 	filter.execute();
 
-	// 将设备中处理后的降噪结果拷贝回 CPU 的 outputBuffer
 	memcpy(film->outputBuffer, outputBuf.getData(), imageSize);
 }
